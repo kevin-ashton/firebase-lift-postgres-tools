@@ -1,0 +1,40 @@
+{
+  "name": "firebase-lift-postgres-tools",
+  "version": "0.0.1",
+  "description": "Unlocking the power of SQL queries for firebase",
+  "main": "index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "test": "node dist/tests/index.js",
+    "ts-build": "tsc ",
+    "ts-watch": "tsc -w",
+    "start": "firebase emulators:start"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevin-ashton/firebase-lift-postgres-tools.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kevin-ashton/firebase-lift-postgres-tools/issues"
+  },
+  "homepage": "https://github.com/kevin-ashton/firebase-lift-postgres-tools#readme",
+  "dependencies": {
+    "firebase": "7.19.1",
+    "firebase-lift": "^0.0.6",
+    "json-stable-stringify": "^1.0.1",
+    "pg": "^8.3.3"
+  },
+  "devDependencies": {
+    "@firebase/testing": "^0.19.5",
+    "@types/json-stable-stringify": "^1.0.32",
+    "@types/lodash": "^4.14.158",
+    "@types/md5": "^2.2.0",
+    "@types/shortid": "^0.0.29",
+    "nano-test-runner": "^1.2.0",
+    "prettier": "^2.0.5",
+    "typescript": "^3.9.3"
+  }
+}

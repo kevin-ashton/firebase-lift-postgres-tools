@@ -1,0 +1,49 @@
+* firebase-lift-postgres-tools
+    * mirror to postgres database
+      * option to query or just use snapshot
+      * maybe add a in memory check if someone, throw it to the back ()
+    * audit
+    * clean up audit
+    * validate mirror
+      * option to check for FK
+      * option to check for data shape
+    * basic query bridge
+    * unit tests
+    * mirror realtime database?>
+
+    * helpers
+      * pubsub
+      * trigger for firebase store to publish to pubsub
+      * logic to read and process items in pubsub
+
+
+
+// Database trigger
+let task = generateSyncTaskFromFirestoreWriteTrigger({collection: 'account', useSnapshot: false, change });
+let task2 = generateSyncTaskFromRTDBWriteTrigger({recordPath: 'device', useSnapshot: false, change });
+// Dump to pubsub or process in place if not a concern for overwhelming postgres connections (only works for small databases)
+
+
+// Server
+let tool = new FirebaseLiftPostgresTool({ app: firebaseApp, mirrorPgs: [pg.Pg], auditPgs: [pg.Pg] })
+
+await tool.processTasks([tasks])
+    // Mirror to databases
+
+
+tool.validatePgMirror({collections: ['account'], fixWhenOutOfSync: true, additionalValidations:
+(collection, doc, firestoreLift, logError) => { },
+progress => {
+    // based on total number of rows in mirrored collections estimated % complete
+} })
+
+
+
+
+
+// Server for read purposes
+let mock = generateFirestorePostgresReadOnlyMirror({ pg: pg.Pg})
+mock.collection('account').getDoc('')
+mock.collection('account').query('blah', '==', 45).query();
+
+
