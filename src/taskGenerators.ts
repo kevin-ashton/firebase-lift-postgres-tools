@@ -43,7 +43,6 @@ export function generateSyncTaskFromWriteTrigger(p: {
   }
 
   const task: SyncTask = {
-    type: p.type,
     action: action,
     collectionOrRecordPath: p.collectionOrRecordPath,
     dateMS: Date.now(),

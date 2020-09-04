@@ -54,9 +54,11 @@ let tool: FirebaseLiftPostgresSyncTool;
 
 export function getFirebaseLiftPostgresSyncTool() {
   if (!tool) {
+    const db1 = { title: 'main_db', pool: getPool1() };
+    const db2 = { title: 'backup_db', pool: getPool2() };
     tool = new FirebaseLiftPostgresSyncTool({
-      mirrorsPgs: [getPool1(), getPool2()],
-      auditPgs: [getPool2()],
+      mirrorsPgs: [db1, db2],
+      auditPgs: [db2],
       errorHandler: (e) => {
         console.log('Error');
         console.log(e);
