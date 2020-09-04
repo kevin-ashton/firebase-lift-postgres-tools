@@ -25,9 +25,9 @@ let task2 = generateSyncTaskFromRTDBWriteTrigger({recordPath: 'device', useSnaps
 
 
 // Server
-let tool = new FirebaseLiftPostgresTool({ app: firebaseApp, mirrorPgs: [pg.Pg], auditPgs: [pg.Pg] })
+let tool = new FirebaseLiftPostgresSyncTool({ app: firebaseApp, mirrorPgs: [pg.Pg], auditPgs: [pg.Pg] })
 
-await tool.processTasks([tasks])
+tool.queueSyncTasks([tasks])
     // Mirror to databases
 
 

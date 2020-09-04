@@ -22,13 +22,16 @@
   },
   "homepage": "https://github.com/kevin-ashton/firebase-lift-postgres-tools#readme",
   "dependencies": {
-    "firebase": "7.19.1",
+    "@types/pg": "^7.14.4",
+    "@types/promise-queue": "^2.2.0",
+    "firebase-admin": "^9.1.1",
     "firebase-lift": "^0.0.6",
     "json-stable-stringify": "^1.0.1",
-    "pg": "^8.3.3"
+    "pg": "^8.3.3",
+    "promise-queue": "^2.2.5"
   },
   "devDependencies": {
-    "@firebase/testing": "^0.19.5",
+    "@firebase/testing": "^0.20.11",
     "@types/json-stable-stringify": "^1.0.32",
     "@types/lodash": "^4.14.158",
     "@types/md5": "^2.2.0",

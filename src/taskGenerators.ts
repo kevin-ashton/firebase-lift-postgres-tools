@@ -1,28 +1,27 @@
-import { SyncTask, SyncTaskFirestore, SyncTaskRtdb } from './models';
+import { SyncTask } from './models';
 
-export function generateSyncTaskFromFirestoreWriteTrigger(p: {
-  collection: string;
+export function generateSyncTaskFromWriteTrigger(p: {
+  type: 'firestore' | 'rtdb';
+  collectionOrRecordPath: string;
   firestoreTriggerWriteChangeObject: any;
-  firestoreTriggerWriteContextObject: any;
   dataScrubber?: (node: any) => Object;
 }): SyncTask {
   const change = p.firestoreTriggerWriteChangeObject;
-  const context = p.firestoreTriggerWriteContextObject;
 
-  let action: SyncTaskFirestore['type'];
+  let action: SyncTask['action'];
 
   if (change.after.exists && change.before.exists) {
-    action = 'firestore-update';
+    action = 'update';
   } else if (change.after.exists && !change.before.exists) {
-    action = 'firestore-create';
+    action = 'create';
   } else if (!change.after.exists && change.before.exists) {
-    action = 'firestore-delete';
+    action = 'delete';
   } else {
-    throw new Error('Unable to determine the action for generateSyncTaskFromFirestoreWriteTrigger');
+    throw new Error('Unable to determine the action for generateSyncTaskFromWriteTrigger');
   }
 
-  let beforeItem = change.before.data();
-  let afterItem = change.after.data();
+  let beforeItem = p.type === 'firestore' ? change.before.data() : change.before.val();
+  let afterItem = p.type === 'firestore' ? change.after.data() : change.after.val();
   if (p.dataScrubber) {
     if (beforeItem) {
       beforeItem = p.dataScrubber(beforeItem);
@@ -32,57 +31,23 @@ export function generateSyncTaskFromFirestoreWriteTrigger(p: {
     }
   }
 
-  const task: SyncTask = {
-    type: action,
-    actionPerformedBy: context.authType === 'USER' ? context.auth?.uid || 'UNKNOWN' : context.authType,
-    collection: p.collection,
-    dateMS: Date.now(),
-    idOrKey: !!beforeItem ? beforeItem.id : afterItem.id,
-    beforeItem,
-    afterItem
-  };
-
-  return task;
-}
-
-export function generateSyncTaskFromRtdbWriteTrigger(p: {
-  recordPath: string;
-  rtdbTriggerWriteChangeObject: any;
-  rtdbTriggerWriteContextObject: any;
-  dataScrubber?: (node: any) => Object;
-}): SyncTask {
-  const change = p.rtdbTriggerWriteChangeObject;
-  const context = p.rtdbTriggerWriteContextObject;
-  let action: SyncTaskRtdb['type'];
-
-  if (change.after.exists && change.before.exists) {
-    action = 'rtdb-update';
-  } else if (change.after.exists && !change.before.exists) {
-    action = 'rtdb-create';
-  } else if (!change.after.exists && change.before.exists) {
-    action = 'rtdb-delete';
+  let idOrKey = '';
+  if (p.type === 'firestore') {
+    idOrKey = !!beforeItem ? beforeItem.id : afterItem.id;
   } else {
-    throw new Error('Unable to determine the action for generateSyncTaskFromFirestoreWriteTrigger');
+    idOrKey = !!beforeItem ? beforeItem.key : afterItem.key;
   }
 
-  let beforeItem = change.before.val();
-  let afterItem = change.after.val();
-
-  if (p.dataScrubber) {
-    if (beforeItem) {
-      beforeItem = p.dataScrubber(beforeItem);
-    }
-    if (afterItem) {
-      afterItem = p.dataScrubber(afterItem);
-    }
+  if (!idOrKey) {
+    throw new Error('Unable to generate sync task! Cannot find idOrKey!');
   }
 
   const task: SyncTask = {
-    type: action,
-    actionPerformedBy: context.authType === 'USER' ? context.auth?.uid || 'UNKNOWN' : context.authType,
-    recordPath: p.recordPath,
+    type: p.type,
+    action: action,
+    collectionOrRecordPath: p.collectionOrRecordPath,
     dateMS: Date.now(),
-    idOrKey: !!beforeItem ? beforeItem.key : afterItem.key,
+    idOrKey,
     beforeItem,
     afterItem
   };
