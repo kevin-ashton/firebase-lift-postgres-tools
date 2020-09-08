@@ -70,7 +70,8 @@ export function getFirebaseLiftPostgresSyncTool() {
       },
       firestore: app.firestore(),
       rtdb: app.database(),
-      syncQueueConcurrency: 10
+      syncQueueConcurrency: 10,
+      syncValidatorQueueConcurrency: 10
     });
   }
 

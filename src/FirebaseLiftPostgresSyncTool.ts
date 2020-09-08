@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import { SyncTask, SyncTaskValidator } from './models';
 import * as fbAdmin from 'firebase-admin';
 import * as Queue from 'promise-queue';
+import * as stable from 'json-stable-stringify';
 
 type ErrorHanlder = (p: { message: string; error?: any; meta?: any }) => void;
 type SyncTaskDebuggerFn = (p: { task: any }) => Promise<void>;
@@ -19,6 +20,7 @@ export class FirebaseLiftPostgresSyncTool {
   private collectionOrRecordPathMeta: CollectionOrRecordPathMeta[] = [];
 
   private syncQueue: Queue = null as any;
+  private syncValidatorQueue: Queue = null as any;
 
   private syncTaskDebuggerFn: null | SyncTaskDebuggerFn = null;
   private runningIdOrKeys: Record<string, number> = {}; // Used to track if the same item is already being processed
@@ -35,12 +37,14 @@ export class FirebaseLiftPostgresSyncTool {
     rtdb: fbAdmin.database.Database;
     firestore: fbAdmin.firestore.Firestore;
     syncQueueConcurrency: number;
+    syncValidatorQueueConcurrency: number;
     errorHandler: (p: { message: string; error?: any }) => void;
   }) {
     console.log('Init FirebaseLiftPostgresSyncTool');
     this.mirrorPgs = config.mirrorsPgs;
     this.auditPgs = config.auditPgs;
     this.syncQueue = new Queue(config.syncQueueConcurrency, Infinity);
+    this.syncValidatorQueue = new Queue(config.syncValidatorQueueConcurrency, Infinity);
     this.collectionOrRecordPathMeta = config.collectionOrRecordPathMeta;
     this.rtdb = config.rtdb;
     this.firestore = config.firestore;
@@ -176,6 +180,22 @@ export class FirebaseLiftPostgresSyncTool {
     });
   }
 
+  _waitUntilSyncValidatorQueueDrained() {
+    return new Promise((resolve) => {
+      const isDone = () => this.syncValidatorQueue.getPendingLength() + this.syncValidatorQueue.getQueueLength() === 0;
+      if (isDone()) {
+        resolve();
+      } else {
+        const internval = setInterval(() => {
+          if (isDone()) {
+            resolve();
+            clearInterval(internval);
+          }
+        }, 300);
+      }
+    });
+  }
+
   public validatePgMirrors(p: {}) {}
 
   private handleSyncTasks(task: SyncTask) {
@@ -293,9 +313,215 @@ export class FirebaseLiftPostgresSyncTool {
     };
   }
 
-  queueSyncTaskValidator(task: SyncTaskValidator[]) {}
+  public queueSyncTaskValidator(tasks: SyncTaskValidator[]) {
+    tasks.forEach((task) => {
+      if (!this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath).includes(task.collectionOrRecordPath)) {
+        this.errorHandler({
+          message: `Cannot sync item. The collectionOrRecordPath is not whitelisted.`,
+          meta: {
+            collectionOrRecordPath: task.collectionOrRecordPath
+          }
+        });
+        return;
+      }
+      this.syncQueue.add(this.handleSyncTaskValidator(task));
+    });
+  }
 
-  fullSyncValidation(p: { collectionsOrRecordPaths: string[] }) {}
+  private async handleUnexpectedSyncItem(p: {
+    idOrKey: string;
+    collectionOrRecordPath: string;
+    dateMS: number;
+    msg: string;
+    pgMirrorIndex: number;
+  }) {
+    try {
+      const table = `mirror_${p.collectionOrRecordPath}`;
+      const r1 = await Promise.all([
+        this.fetchItemFromFirebase({ collectionOrRecordPath: p.collectionOrRecordPath, idOrKey: p.idOrKey }),
+        this.mirrorPgs[
+          p.pgMirrorIndex
+        ].pool.query(`select id, last_sync_task_date_ms, item, from ${table} where id = $1`, [p.idOrKey])
+      ]);
+
+      const firebaseObject = r1[0];
+      const pgObject = r1[1].rows[0].item || {};
+
+      if (firebaseObject && pgObject) {
+        // Since both exists check if they are in sync
+        if (stable(pgObject) === stable(firebaseObject)) {
+          // Since things are the same looks like it got synced correctly at some point
+          // Do nothing
+        } else {
+          await this.mirrorPgs[
+            p.pgMirrorIndex
+          ].pool.query(`update ${table} set item = $1, updated_at = now(), last_sync_task_date_ms = $2 where id = $3`, [
+            firebaseObject,
+            p.dateMS,
+            p.idOrKey
+          ]);
+          this.errorHandler({
+            message: p.msg,
+            meta: {
+              extraMsg: 'firebaseObject and pgObject did not match',
+              pgTitle: this.mirrorPgs[p.pgMirrorIndex].title,
+              firebaseObject: firebaseObject || {},
+              pgObject: pgObject || {}
+            }
+          });
+        }
+      } else if (firebaseObject && !pgObject) {
+        // Insert item
+        await this.mirrorPgs[
+          p.pgMirrorIndex
+        ].pool.query(`insert into ${table} (id, item, updated_at, last_sync_task_date_ms) values ($1, $2, now(), $3)`, [
+          p.idOrKey,
+          firebaseObject,
+          p.dateMS
+        ]);
+        this.errorHandler({
+          message: p.msg,
+          meta: {
+            extraMsg: 'pgObject did not exists',
+            pgTitle: this.mirrorPgs[p.pgMirrorIndex].title,
+            firebaseObject: firebaseObject || {},
+            pgObject: pgObject || {}
+          }
+        });
+      } else if (!firebaseObject && pgObject) {
+        await this.mirrorPgs[p.pgMirrorIndex].pool.query(`delete from ${table} where id = $1`, [p.idOrKey]);
+        this.errorHandler({
+          message: p.msg,
+          meta: {
+            extraMsg: 'pgObject existed but should have been deleted',
+            pgTitle: this.mirrorPgs[p.pgMirrorIndex].title,
+            firebaseObject: firebaseObject || {},
+            pgObject: pgObject || {}
+          }
+        });
+      } else if (!firebaseObject && !pgObject) {
+        // Since both have been deleted they appear to be in sync.
+        // Do nothing
+      }
+    } catch (e) {
+      this.errorHandler({ message: 'Error running handleUnexpectedSyncItem', error: e, meta: p });
+    }
+  }
+
+  private async fetchItemFromFirebase(p: { idOrKey: string; collectionOrRecordPath: string }): Promise<Object | null> {
+    // Figure out if firestore or rtdb
+    let meta = this.collectionOrRecordPathMeta.find((t) => t.collectionOrRecordPath === p.collectionOrRecordPath);
+    if (!meta) {
+      this.errorHandler({
+        message: `Unable to find meta for a collectionOrRecordPath. collectionOrRecordPath: ${p.collectionOrRecordPath}. Cannot fetchItemFromFirebase.`
+      });
+      return null;
+    }
+
+    if (meta.source === 'firestore') {
+      const r = await this.firestore.collection(p.collectionOrRecordPath).doc(p.idOrKey).get();
+      const data = r.data();
+      if (data) {
+        return data;
+      }
+    } else if (meta.source === 'rtdb') {
+      const r = await this.rtdb.ref(`${p.collectionOrRecordPath}/${p.idOrKey}`).once('value');
+      const data = r.val();
+      if (data) {
+        return data;
+      }
+    } else {
+      this.errorHandler({ message: `Unknown meta source in fetchItemFromFirebase` });
+    }
+    return null;
+  }
+
+  private handleSyncTaskValidator(task: SyncTaskValidator) {
+    return async () => {
+      await Promise.all(
+        this.mirrorPgs.map(async (pg, index) => {
+          try {
+            const table = `mirror_${task.collectionOrRecordPath}`;
+            let r1 = await pg.pool.query(`select id, last_sync_task_date_ms, item, from ${table} where id = $1`, [
+              task.idOrKey
+            ]);
+
+            if (task.action === 'create' || task.action === 'update') {
+              if (r1.rows.length !== 1) {
+                // Since unexpected length we sync it just in case
+                await this.handleUnexpectedSyncItem({
+                  collectionOrRecordPath: task.collectionOrRecordPath,
+                  idOrKey: task.idOrKey,
+                  dateMS: task.dateMS,
+                  msg: 'handleSyncTaskValidator create/update has an unexpected length',
+                  pgMirrorIndex: index
+                });
+                return;
+              }
+
+              if (r1.rows[0].last_sync_task_date_ms > task.dateMS) {
+                // Since the lasted sync date is newer then we just ignore this
+                return;
+              }
+
+              if (r1.rows[0].last_sync_task_date_ms < task.dateMS) {
+                await this.handleUnexpectedSyncItem({
+                  collectionOrRecordPath: task.collectionOrRecordPath,
+                  idOrKey: task.idOrKey,
+                  dateMS: task.dateMS,
+                  msg:
+                    'handleSyncTaskValidator create/update the last_sync_task_date_ms is less than task.dateMS suggesting the syncTask was never run',
+                  pgMirrorIndex: index
+                });
+                return;
+              }
+
+              if (r1.rows[0].last_sync_task_date_ms === task.dateMS) {
+                if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
+                  await this.handleUnexpectedSyncItem({
+                    collectionOrRecordPath: task.collectionOrRecordPath,
+                    idOrKey: task.idOrKey,
+                    dateMS: task.dateMS,
+                    msg:
+                      'handleSyncTaskValidator create/update the last_sync_task_date_ms matches but the items do not match',
+                    pgMirrorIndex: index
+                  });
+                  return;
+                }
+              }
+              // If date is older (then it has not refreshed)
+              // If date is newer then ignore (since we assume it has been updated more recently)
+            } else if (task.action === 'delete') {
+              if (r1.rows.length > 0) {
+                if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
+                  await this.handleUnexpectedSyncItem({
+                    collectionOrRecordPath: task.collectionOrRecordPath,
+                    idOrKey: task.idOrKey,
+                    dateMS: task.dateMS,
+                    msg: 'handleSyncTaskValidator delete a row shows up but it should have been deleted',
+                    pgMirrorIndex: index
+                  });
+                  return;
+                }
+              }
+            } else {
+              this.errorHandler({ message: 'Unknown taskValidator action type', meta: { task } });
+            }
+          } catch (e) {
+            this.errorHandler({
+              message: 'Error while running handleSyncTaskValidator',
+              meta: { task, pgTitle: pg.title }
+            });
+          }
+        })
+      );
+    };
+  }
+
+  public fullSyncValidation(p: { collectionsOrRecordPaths: string[] }) {
+    // Fetch each collection one at a time and validate it
+    // Need progress and some post reporting
+  }
 
   public static generateSyncTaskFromWriteTrigger(p: {
     type: 'firestore' | 'rtdb';
@@ -339,10 +565,12 @@ export class FirebaseLiftPostgresSyncTool {
       throw new Error('Unable to generate sync task! Cannot find idOrKey!');
     }
 
+    const dateMS = Date.now();
+
     const syncTask: SyncTask = {
       action: action,
       collectionOrRecordPath: p.collectionOrRecordPath,
-      dateMS: Date.now(),
+      dateMS,
       idOrKey,
       beforeItem,
       afterItem
@@ -351,7 +579,7 @@ export class FirebaseLiftPostgresSyncTool {
     const syncTaskValidator: SyncTaskValidator = {
       action: action,
       collectionOrRecordPath: p.collectionOrRecordPath,
-      dateMS: Date.now(),
+      dateMS,
       idOrKey,
       afterItem
     };
