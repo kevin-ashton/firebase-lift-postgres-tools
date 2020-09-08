@@ -1,18 +1,25 @@
 import { Pool } from 'pg';
-import { SyncTask } from './models';
+import { SyncTask, SyncTaskValidator } from './models';
 import * as fbAdmin from 'firebase-admin';
 import * as Queue from 'promise-queue';
 
-type ErrorHanlder = (p: { message: string; error?: any }) => void;
+type ErrorHanlder = (p: { message: string; error?: any; meta?: any }) => void;
 type SyncTaskDebuggerFn = (p: { task: any }) => Promise<void>;
 
+export type CollectionOrRecordPathMeta = { collectionOrRecordPath: string; source: 'rtdb' | 'firestore' };
+
 export class FirebaseLiftPostgresSyncTool {
+  private errorHandler: ErrorHanlder = null as any;
+
   private mirrorPgs: { title: string; pool: Pool }[] = [];
   private auditPgs: { title: string; pool: Pool }[] = [];
-  private fbApp: fbAdmin.app.App = null as any;
-  private baseTableNames: string[] = [];
-  private queue: Queue = null as any;
-  private errorHandler: ErrorHanlder = null as any;
+
+  private rtdb: fbAdmin.database.Database = null as any;
+  private firestore: fbAdmin.firestore.Firestore = null as any;
+  private collectionOrRecordPathMeta: CollectionOrRecordPathMeta[] = [];
+
+  private syncQueue: Queue = null as any;
+
   private syncTaskDebuggerFn: null | SyncTaskDebuggerFn = null;
   private runningIdOrKeys: Record<string, number> = {}; // Used to track if the same item is already being processed
 
@@ -24,17 +31,19 @@ export class FirebaseLiftPostgresSyncTool {
   constructor(config: {
     mirrorsPgs: { title: string; pool: Pool }[];
     auditPgs: { title: string; pool: Pool }[];
-    fbApp: fbAdmin.app.App;
+    collectionOrRecordPathMeta: CollectionOrRecordPathMeta[];
+    rtdb: fbAdmin.database.Database;
+    firestore: fbAdmin.firestore.Firestore;
     syncQueueConcurrency: number;
     errorHandler: (p: { message: string; error?: any }) => void;
-    baseTableNames: string[]; // Names of collections or root record paths
   }) {
     console.log('Init FirebaseLiftPostgresSyncTool');
     this.mirrorPgs = config.mirrorsPgs;
     this.auditPgs = config.auditPgs;
-    this.fbApp = config.fbApp;
-    this.queue = new Queue(config.syncQueueConcurrency, Infinity);
-    this.baseTableNames = config.baseTableNames;
+    this.syncQueue = new Queue(config.syncQueueConcurrency, Infinity);
+    this.collectionOrRecordPathMeta = config.collectionOrRecordPathMeta;
+    this.rtdb = config.rtdb;
+    this.firestore = config.firestore;
     this.errorHandler = config.errorHandler;
     this.ensureMirrorTablesExists();
     this.ensureAuditTablesExists();
@@ -49,8 +58,9 @@ export class FirebaseLiftPostgresSyncTool {
     if (this.mirrorPgs.length > 0) {
       for (let i = 0; i < this.mirrorPgs.length; i++) {
         const pg = this.mirrorPgs[i];
-        for (let k = 0; k < this.baseTableNames.length; k++) {
-          const baseTableName = this.baseTableNames[k];
+        const baseTableNames = this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
+        for (let k = 0; k < baseTableNames.length; k++) {
+          const baseTableName = baseTableNames[k];
           try {
             await pg.pool.query(`select count(*) from mirror_${baseTableName}`);
           } catch (e) {
@@ -67,9 +77,13 @@ export class FirebaseLiftPostgresSyncTool {
               );`);
             } catch (ee) {
               this.totalErrors += 1;
-              const msg = `Trouble ensuring an mirror table has been created. BaseTableName: ${baseTableName}. DB Title: ${pg.title} Msg: ${ee.message}`;
+              const msg = `Trouble ensuring an mirror table has been created.`;
               console.error(msg);
-              this.errorHandler({ message: msg, error: ee });
+              this.errorHandler({
+                message: msg,
+                error: ee,
+                meta: { baseTableName, dbTitle: pg.title, errorMsg: ee.message }
+              });
               throw new Error(msg);
             }
           }
@@ -83,8 +97,9 @@ export class FirebaseLiftPostgresSyncTool {
     if (this.auditPgs.length > 0) {
       for (let i = 0; i < this.auditPgs.length; i++) {
         const pg = this.auditPgs[i];
-        for (let k = 0; k < this.baseTableNames.length; k++) {
-          const baseTableName = this.baseTableNames[k];
+        const baseTableNames = this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
+        for (let k = 0; k < baseTableNames.length; k++) {
+          const baseTableName = baseTableNames[k];
           try {
             await pg.pool.query(`select count(*) from audit_${baseTableName}`);
           } catch (e) {
@@ -104,9 +119,13 @@ export class FirebaseLiftPostgresSyncTool {
               `);
             } catch (ee) {
               this.totalErrors += 1;
-              const msg = `Trouble ensuring an audit table has been created. BaseTableName: ${baseTableName}. DB Title: ${pg.title} Msg: ${ee.message}`;
+              const msg = `Trouble ensuring an audit table has been created.`;
               console.error(msg);
-              this.errorHandler({ message: msg, error: ee });
+              this.errorHandler({
+                message: msg,
+                error: ee,
+                meta: { baseTableName, dbTitle: pg.title, errorMsg: ee.message }
+              });
               throw new Error(msg);
             }
           }
@@ -119,7 +138,7 @@ export class FirebaseLiftPostgresSyncTool {
     return {
       totalErrors: this.totalErrors,
       totalSyncTasksProcessed: this.totalSyncTasksProcessed,
-      totalSyncTasksWaitingInQueue: this.queue.getPendingLength(),
+      totalSyncTasksWaitingInQueue: this.syncQueue.getPendingLength(),
       totalSyncTasksCurrentlyRunning: Object.keys(this.runningIdOrKeys).length,
       totalSyncTasksPendingRetry: this.totalSyncTasksPendingRetry,
       totalSyncTasksSkipped: this.totalSyncTasksSkipped
@@ -128,20 +147,22 @@ export class FirebaseLiftPostgresSyncTool {
 
   queueSyncTasks(tasks: SyncTask[]) {
     tasks.forEach((task) => {
-      if (!this.baseTableNames.includes(task.collectionOrRecordPath)) {
+      if (!this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath).includes(task.collectionOrRecordPath)) {
         this.errorHandler({
-          message: `Cannot sync item. The collectionOrRecordPath is not whitelisted. collectionOrRecordPath: ${task.collectionOrRecordPath} `
+          message: `Cannot sync item. The collectionOrRecordPath is not whitelisted.`,
+          meta: {
+            collectionOrRecordPath: task.collectionOrRecordPath
+          }
         });
         return;
       }
-      this.queue.add(this.handleSyncTasks(task));
+      this.syncQueue.add(this.handleSyncTasks(task));
     });
   }
 
-  // Little helper fn for testing
-  _waitUntilQueueDrained() {
+  _waitUntilSyncQueueDrained() {
     return new Promise((resolve) => {
-      const isDone = () => this.queue.getPendingLength() + this.queue.getQueueLength() === 0;
+      const isDone = () => this.syncQueue.getPendingLength() + this.syncQueue.getQueueLength() === 0;
       if (isDone()) {
         resolve();
       } else {
@@ -194,7 +215,11 @@ export class FirebaseLiftPostgresSyncTool {
               if (task.action === 'create') {
                 if (r1.rows.length > 0) {
                   this.errorHandler({
-                    message: `Trying to create an item but the item already exist. IdOrKey: ${task.idOrKey} DB Title: ${pg.title}`
+                    message: `Trying to create an item but the item already exist.`,
+                    meta: {
+                      task,
+                      pgTitle: pg.title
+                    }
                   });
                   return;
                 }
@@ -220,7 +245,8 @@ export class FirebaseLiftPostgresSyncTool {
             } catch (e) {
               this.totalErrors += 1;
               this.errorHandler({
-                message: `Trouble mirroring in handleMirrorEvent. ItemId: ${task.idOrKey} ErrorMsg: ${e.message} `,
+                message: `Trouble mirroring in handleMirrorEvent.`,
+                meta: { task, errorMsg: e.message },
                 error: e
               });
             }
@@ -239,7 +265,12 @@ export class FirebaseLiftPostgresSyncTool {
             } catch (e) {
               this.totalErrors += 1;
               this.errorHandler({
-                message: `Trouble adding audit in handleMirrorEvent. ItemId: ${task.idOrKey}, DB Title: ${pg.title} ErrorMsg: ${e.message} `,
+                message: `Trouble adding audit in handleMirrorEvent.`,
+                meta: {
+                  task,
+                  pgTitle: pg.title,
+                  errorMsg: e.message
+                },
                 error: e
               });
             }
@@ -248,7 +279,11 @@ export class FirebaseLiftPostgresSyncTool {
       } catch (e) {
         this.totalErrors += 1;
         this.errorHandler({
-          message: `Trouble running handleSyncTasks. ItemId: ${task.idOrKey} ErrorMsg: ${e.message} `,
+          message: `Trouble running handleSyncTasks.`,
+          meta: {
+            task,
+            errorMsg: e.message
+          },
           error: e
         });
       } finally {
@@ -256,5 +291,71 @@ export class FirebaseLiftPostgresSyncTool {
         this.totalSyncTasksProcessed += 1;
       }
     };
+  }
+
+  queueSyncTaskValidator(task: SyncTaskValidator[]) {}
+
+  fullSyncValidation(p: { collectionsOrRecordPaths: string[] }) {}
+
+  public static generateSyncTaskFromWriteTrigger(p: {
+    type: 'firestore' | 'rtdb';
+    collectionOrRecordPath: string;
+    firestoreTriggerWriteChangeObject: any;
+    dataScrubber?: (node: any) => Object;
+  }): { syncTask: SyncTask; syncTaskValidator: SyncTaskValidator } {
+    const change = p.firestoreTriggerWriteChangeObject;
+
+    let action: SyncTask['action'];
+
+    if (change.after.exists && change.before.exists) {
+      action = 'update';
+    } else if (change.after.exists && !change.before.exists) {
+      action = 'create';
+    } else if (!change.after.exists && change.before.exists) {
+      action = 'delete';
+    } else {
+      throw new Error('Unable to determine the action for generateSyncTaskFromWriteTrigger');
+    }
+
+    let beforeItem = p.type === 'firestore' ? change.before.data() : change.before.val();
+    let afterItem = p.type === 'firestore' ? change.after.data() : change.after.val();
+    if (p.dataScrubber) {
+      if (beforeItem) {
+        beforeItem = p.dataScrubber(beforeItem);
+      }
+      if (afterItem) {
+        afterItem = p.dataScrubber(afterItem);
+      }
+    }
+
+    let idOrKey = '';
+    if (p.type === 'firestore') {
+      idOrKey = !!beforeItem ? beforeItem.id : afterItem.id;
+    } else {
+      idOrKey = !!beforeItem ? beforeItem.key : afterItem.key;
+    }
+
+    if (!idOrKey) {
+      throw new Error('Unable to generate sync task! Cannot find idOrKey!');
+    }
+
+    const syncTask: SyncTask = {
+      action: action,
+      collectionOrRecordPath: p.collectionOrRecordPath,
+      dateMS: Date.now(),
+      idOrKey,
+      beforeItem,
+      afterItem
+    };
+
+    const syncTaskValidator: SyncTaskValidator = {
+      action: action,
+      collectionOrRecordPath: p.collectionOrRecordPath,
+      dateMS: Date.now(),
+      idOrKey,
+      afterItem
+    };
+
+    return { syncTask, syncTaskValidator };
   }
 }

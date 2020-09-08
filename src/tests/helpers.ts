@@ -1,10 +1,13 @@
 import { clearFirestoreData } from '@firebase/testing';
-import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
+import { FirebaseLiftPostgresSyncTool, CollectionOrRecordPathMeta } from '../FirebaseLiftPostgresSyncTool';
 import * as fbAdmin from 'firebase-admin';
 import * as pg from 'pg';
 
 const testFirebaseConfig = { projectId: 'fir-lift', databaseURL: 'http://localhost:9000/?ns=fir-lift' };
-export const baseExampleTableNames = ['person', 'book', 'device'];
+export const collectionOrRecordPathMeta: CollectionOrRecordPathMeta[] = [
+  { collectionOrRecordPath: 'person', source: 'firestore' },
+  { collectionOrRecordPath: 'device', source: 'rtdb' }
+];
 
 let app: fbAdmin.app.App;
 let pool1: pg.Pool;
@@ -34,6 +37,7 @@ export async function reset() {
   console.log('Reset and clear data');
   await clearFirestoreData({ projectId: testFirebaseConfig.projectId });
 
+  const baseExampleTableNames = collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
   for (let i = 0; i < baseExampleTableNames.length; i++) {
     try {
       await getPool1().query(`truncate table mirror_${baseExampleTableNames[i]}`);
@@ -59,12 +63,13 @@ export function getFirebaseLiftPostgresSyncTool() {
     tool = new FirebaseLiftPostgresSyncTool({
       mirrorsPgs: [db1, db2],
       auditPgs: [db2],
+      collectionOrRecordPathMeta,
       errorHandler: (e) => {
         console.log('Error');
         console.log(e);
       },
-      baseTableNames: baseExampleTableNames,
-      fbApp: app,
+      firestore: app.firestore(),
+      rtdb: app.database(),
       syncQueueConcurrency: 10
     });
   }
