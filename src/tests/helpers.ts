@@ -97,18 +97,18 @@ export function generateMockFirebaseChangeObject(p: {
 
   if (p.type === 'create') {
     return {
-      before: { exists: false, [dataFnName]: () => null },
-      after: { exists: true, [dataFnName]: () => ({ ...p.afterItem, ...{ [idOrKeyName]: p.itemIdOrKey } }) }
+      before: { exists: false, [dataFnName]: () => null, [idOrKeyName]: p.itemIdOrKey },
+      after: { exists: true, [dataFnName]: () => p.afterItem, [idOrKeyName]: p.itemIdOrKey }
     };
   } else if (p.type === 'update') {
     return {
-      before: { exists: true, [dataFnName]: () => ({ ...p.beforeItem, ...{ [idOrKeyName]: p.itemIdOrKey } }) },
-      after: { exists: true, [dataFnName]: () => ({ ...p.afterItem, ...{ [idOrKeyName]: p.itemIdOrKey } }) }
+      before: { exists: true, [dataFnName]: () => p.beforeItem, [idOrKeyName]: p.itemIdOrKey },
+      after: { exists: true, [dataFnName]: () => p.afterItem, [idOrKeyName]: p.itemIdOrKey }
     };
   } else if (p.type === 'delete') {
     return {
-      before: { exists: true, [dataFnName]: () => ({ ...p.beforeItem, ...{ [idOrKeyName]: p.itemIdOrKey } }) },
-      after: { exists: false, [dataFnName]: () => null }
+      before: { exists: true, [dataFnName]: () => p.beforeItem, [idOrKeyName]: p.itemIdOrKey },
+      after: { exists: false, [dataFnName]: () => null, [idOrKeyName]: p.itemIdOrKey }
     };
   } else {
     throw new Error('Invalid type for generateMockFirebaseChangeObject. Type: ' + p.type);

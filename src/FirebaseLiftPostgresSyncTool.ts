@@ -5,7 +5,7 @@ import * as Queue from 'promise-queue';
 import * as stable from 'json-stable-stringify';
 
 type ErrorHanlder = (p: { message: string; error?: any; meta?: any }) => void;
-type SyncTaskDebuggerFn = (p: { task: any }) => Promise<void>;
+type DebuggerFn = (p: { task: any }) => Promise<void>;
 
 export type CollectionOrRecordPathMeta = { collectionOrRecordPath: string; source: 'rtdb' | 'firestore' };
 
@@ -21,13 +21,18 @@ export class FirebaseLiftPostgresSyncTool {
   private syncQueue: Queue = null as any;
   private syncValidatorQueue: Queue = null as any;
 
-  private syncTaskDebuggerFn: null | SyncTaskDebuggerFn = null;
-  private runningIdOrKeys: Record<string, number> = {}; // Used to track if the same item is already being processed
+  private syncTaskDebuggerFn: null | DebuggerFn = null;
+  private syncTaskRunningIdOrKeys: Record<string, number> = {}; // Used to track if the same item is already being processed
+  private totalSyncTasksPendingRetry = 0;
+  private totalSyncTasksSkipped = 0;
 
   private totalSyncTasksProcessed = 0;
   private totalErrors = 0;
-  private totalSyncTasksPendingRetry = 0;
-  private totalSyncTasksSkipped = 0;
+
+  private totalSyncValidatorTasksProcessed = 0;
+  private syncValidatorTaskDebuggerFn: null | DebuggerFn = null;
+  private syncValidatorTaskRunningIdOrKeys: Record<string, number> = {}; // Used to track if the same item is already being processed
+  private totalSyncValidatorTasksPendingRetry = 0;
   private totalSyncValidatorsTasksSkipped = 0;
 
   constructor(config: {
@@ -53,8 +58,12 @@ export class FirebaseLiftPostgresSyncTool {
     this.ensureAuditTablesExists();
   }
 
-  public _registerSyncTaskDebugFn(fn: SyncTaskDebuggerFn) {
+  public _registerSyncTaskDebugFn(fn: DebuggerFn) {
     this.syncTaskDebuggerFn = fn;
+  }
+
+  public _registerSyncValidatorTaskDebugFn(fn: DebuggerFn) {
+    this.syncValidatorTaskDebuggerFn = fn;
   }
 
   private errorHandler: ErrorHanlder = (p) => {
@@ -146,12 +155,17 @@ export class FirebaseLiftPostgresSyncTool {
       totalErrors: this.totalErrors,
       totalSyncTasksProcessed: this.totalSyncTasksProcessed,
       totalSyncTasksWaitingInQueue: this.syncQueue.getPendingLength(),
-      totalSyncTasksCurrentlyRunning: Object.keys(this.runningIdOrKeys).length,
+      totalSyncTasksCurrentlyRunning: Object.keys(this.syncTaskRunningIdOrKeys).length,
       totalSyncTasksPendingRetry: this.totalSyncTasksPendingRetry,
       totalSyncTasksSkipped: this.totalSyncTasksSkipped,
+
+      totalSyncValidatorTasksProcessed: this.totalSyncValidatorTasksProcessed,
       totalSyncValidatorsTasksSkipped: this.totalSyncValidatorsTasksSkipped,
+      totalSyncValidatorTasksCurrentlyRunning: Object.keys(this.syncValidatorTaskRunningIdOrKeys).length,
+      totalSyncValidatorTasksPendingRetry: this.totalSyncValidatorTasksPendingRetry,
+
       totalMirrorPgs: this.mirrorPgs.length,
-      totalAuditPgs: this.mirrorPgs.length
+      totalAuditPgs: this.auditPgs.length
     };
   }
 
@@ -206,8 +220,8 @@ export class FirebaseLiftPostgresSyncTool {
 
   private handleSyncTasks(task: SyncTask) {
     return async () => {
-      if (this.runningIdOrKeys[task.idOrKey]) {
-        if (this.runningIdOrKeys[task.idOrKey] > task.dateMS) {
+      if (this.syncTaskRunningIdOrKeys[task.idOrKey]) {
+        if (this.syncTaskRunningIdOrKeys[task.idOrKey] > task.dateMS) {
           // if the pending task is older than the one being executed we discard it
           this.totalSyncTasksSkipped += 1;
           return;
@@ -221,7 +235,7 @@ export class FirebaseLiftPostgresSyncTool {
         }
       }
 
-      this.runningIdOrKeys[task.idOrKey] = task.dateMS;
+      this.syncTaskRunningIdOrKeys[task.idOrKey] = task.dateMS;
 
       // Order matters. This line should not be any higher in this fn
       if (this.syncTaskDebuggerFn) {
@@ -310,7 +324,7 @@ export class FirebaseLiftPostgresSyncTool {
           error: e
         });
       } finally {
-        delete this.runningIdOrKeys[task.idOrKey];
+        delete this.syncTaskRunningIdOrKeys[task.idOrKey];
         this.totalSyncTasksProcessed += 1;
       }
     };
@@ -443,81 +457,113 @@ export class FirebaseLiftPostgresSyncTool {
 
   private handleSyncTaskValidator(task: SyncTaskValidator) {
     return async () => {
-      await Promise.all(
-        this.mirrorPgs.map(async (pg, index) => {
-          try {
-            const table = `mirror_${task.collectionOrRecordPath}`;
-            const r1 = await pg.pool.query(`select id, last_sync_task_date_ms, item from ${table} where id = $1`, [
-              task.idOrKey
-            ]);
-            const lastSyncTaskDateMs = extractLastSyncTaskDateMs(r1.rows[0]);
+      if (this.syncValidatorTaskRunningIdOrKeys[task.idOrKey]) {
+        if (this.syncValidatorTaskRunningIdOrKeys[task.idOrKey] > task.dateMS) {
+          // if the pending task is older than the one being executed we discard it
+          this.totalSyncValidatorsTasksSkipped += 1;
+          return;
+        } else {
+          // wait a second then queue this task again
+          this.totalSyncValidatorTasksPendingRetry += 1;
+          await new Promise((r) => setTimeout(() => r(), 1000));
+          this.queueSyncTaskValidator([task]);
+          this.totalSyncValidatorTasksPendingRetry -= 1;
+          return;
+        }
+      }
 
-            if (task.action === 'create' || task.action === 'update') {
-              if (r1.rows.length !== 1) {
-                // Since unexpected length we sync it just in case
-                await this.handleUnexpectedSyncItem({
-                  collectionOrRecordPath: task.collectionOrRecordPath,
-                  idOrKey: task.idOrKey,
-                  dateMS: task.dateMS,
-                  msg: 'handleSyncTaskValidator create/update has an unexpected length',
-                  pgMirrorIndex: index
-                });
-                return;
-              }
+      this.syncValidatorTaskRunningIdOrKeys[task.idOrKey] = task.dateMS;
 
-              if (lastSyncTaskDateMs > task.dateMS) {
-                // Since the lasted sync date is newer then we just ignore this
-                this.totalSyncValidatorsTasksSkipped += 1;
-                return;
-              }
+      // Order matters. This line should not be any higher in this fn
+      if (this.syncValidatorTaskDebuggerFn) {
+        await this.syncValidatorTaskDebuggerFn({ task });
+      }
 
-              if (lastSyncTaskDateMs < task.dateMS) {
-                await this.handleUnexpectedSyncItem({
-                  collectionOrRecordPath: task.collectionOrRecordPath,
-                  idOrKey: task.idOrKey,
-                  dateMS: task.dateMS,
-                  msg:
-                    'handleSyncTaskValidator create/update the last_sync_task_date_ms is less than task.dateMS suggesting the syncTask was never run',
-                  pgMirrorIndex: index
-                });
-                return;
-              }
+      try {
+        await Promise.all(
+          this.mirrorPgs.map(async (pg, index) => {
+            try {
+              const table = `mirror_${task.collectionOrRecordPath}`;
+              const r1 = await pg.pool.query(`select id, last_sync_task_date_ms, item from ${table} where id = $1`, [
+                task.idOrKey
+              ]);
+              const lastSyncTaskDateMs = extractLastSyncTaskDateMs(r1.rows[0]);
 
-              if (lastSyncTaskDateMs === task.dateMS) {
-                if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
+              if (task.action === 'create' || task.action === 'update') {
+                if (r1.rows.length !== 1) {
+                  // Since unexpected length we sync it just in case
+                  await this.handleUnexpectedSyncItem({
+                    collectionOrRecordPath: task.collectionOrRecordPath,
+                    idOrKey: task.idOrKey,
+                    dateMS: task.dateMS,
+                    msg: 'handleSyncTaskValidator create/update has an unexpected length',
+                    pgMirrorIndex: index
+                  });
+                  return;
+                }
+
+                if (lastSyncTaskDateMs > task.dateMS) {
+                  // Since the lasted sync date is newer then we just ignore this
+                  this.totalSyncValidatorsTasksSkipped += 1;
+                  return;
+                }
+
+                if (lastSyncTaskDateMs < task.dateMS) {
                   await this.handleUnexpectedSyncItem({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
                     msg:
-                      'handleSyncTaskValidator create/update the last_sync_task_date_ms matches but the items do not match',
+                      'handleSyncTaskValidator create/update the last_sync_task_date_ms is less than task.dateMS suggesting the syncTask was never run',
                     pgMirrorIndex: index
                   });
                   return;
                 }
+
+                if (lastSyncTaskDateMs === task.dateMS) {
+                  if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
+                    await this.handleUnexpectedSyncItem({
+                      collectionOrRecordPath: task.collectionOrRecordPath,
+                      idOrKey: task.idOrKey,
+                      dateMS: task.dateMS,
+                      msg:
+                        'handleSyncTaskValidator create/update the last_sync_task_date_ms matches but the items do not match',
+                      pgMirrorIndex: index
+                    });
+                    return;
+                  }
+                }
+              } else if (task.action === 'delete') {
+                if (r1.rows.length > 0) {
+                  await this.handleUnexpectedSyncItem({
+                    collectionOrRecordPath: task.collectionOrRecordPath,
+                    idOrKey: task.idOrKey,
+                    dateMS: task.dateMS,
+                    msg: 'handleSyncTaskValidator delete a row shows up but it should have been deleted',
+                    pgMirrorIndex: index
+                  });
+                  return;
+                }
+              } else {
+                this.errorHandler({ message: 'Unknown taskValidator action type', meta: { task } });
               }
-            } else if (task.action === 'delete') {
-              if (r1.rows.length > 0) {
-                await this.handleUnexpectedSyncItem({
-                  collectionOrRecordPath: task.collectionOrRecordPath,
-                  idOrKey: task.idOrKey,
-                  dateMS: task.dateMS,
-                  msg: 'handleSyncTaskValidator delete a row shows up but it should have been deleted',
-                  pgMirrorIndex: index
-                });
-                return;
-              }
-            } else {
-              this.errorHandler({ message: 'Unknown taskValidator action type', meta: { task } });
+            } catch (e) {
+              this.errorHandler({
+                message: 'Error while running handleSyncTaskValidator',
+                meta: { task, pgTitle: pg.title, errorMsg: e.message }
+              });
             }
-          } catch (e) {
-            this.errorHandler({
-              message: 'Error while running handleSyncTaskValidator',
-              meta: { task, pgTitle: pg.title, errorMsg: e.message }
-            });
-          }
-        })
-      );
+          })
+        );
+      } catch (e) {
+        this.errorHandler({
+          message: 'Trouble running handleSyncTaskValidator',
+          meta: { task, errorMsg: e.message }
+        });
+      } finally {
+        this.totalSyncValidatorTasksProcessed += 1;
+        delete this.syncValidatorTaskRunningIdOrKeys[task.idOrKey];
+      }
     };
   }
 
@@ -559,9 +605,9 @@ export class FirebaseLiftPostgresSyncTool {
 
     let idOrKey = '';
     if (p.type === 'firestore') {
-      idOrKey = !!beforeItem ? beforeItem.id : afterItem.id;
+      idOrKey = !!beforeItem ? change.before.id : change.after.id;
     } else {
-      idOrKey = !!beforeItem ? beforeItem.key : afterItem.key;
+      idOrKey = !!beforeItem ? change.before.key : change.after.key;
     }
 
     if (!idOrKey) {

@@ -10,8 +10,6 @@ import {
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
 import * as stable from 'json-stable-stringify';
-import { Pool } from 'pg';
-import { toLength } from 'lodash';
 
 const item1 = {
   id: 'foo1',
@@ -20,18 +18,20 @@ const item1 = {
 };
 
 const collection = collectionOrRecordPathMeta[0].collectionOrRecordPath;
+const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
 
 export function syncTaskValidatorsTests() {
   describe('FirebaseLiftPostgresSyncTool Sync Validator Tasks Basics', () => {
     const firestoreCollection = getFirebaseApp().firestore().collection(collection);
+    const rtdb = getFirebaseApp().database().ref(rtdbRecordPath);
 
-    test('Basic validator working', async () => {
+    test('Basic Create/Update Validator', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
 
       const startingErrors = getFirebaseLiftPostgresSyncTool().getStats().totalErrors;
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -50,12 +50,61 @@ export function syncTaskValidatorsTests() {
       assert.deepEqual(startingErrors, tool.getStats().totalErrors);
     });
 
+    test('Basic delete Validator', async () => {
+      const tool = getFirebaseLiftPostgresSyncTool();
+      await reset();
+      await firestoreCollection.doc(item1.id).set(item1);
+      const originalErrors = tool.getStats().totalErrors;
+
+      await firestoreCollection.doc(item1.id).set(item1);
+      const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+        type: 'firestore',
+        collectionOrRecordPath: 'person',
+        firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
+          itemIdOrKey: item1.id,
+          type: 'create',
+          afterItem: item1,
+          beforeItem: undefined,
+          dbType: 'firestore'
+        })
+      });
+      tool.queueSyncTasks([syncTask]);
+      await tool._waitUntilSyncQueueDrained();
+
+      await firestoreCollection.doc(item1.id).delete();
+      const {
+        syncTask: syncTask2,
+        syncTaskValidator: syncTaskValidator2
+      } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+        type: 'firestore',
+        collectionOrRecordPath: 'person',
+        firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
+          itemIdOrKey: item1.id,
+          type: 'delete',
+          afterItem: undefined,
+          beforeItem: undefined,
+          dbType: 'firestore'
+        })
+      });
+      tool.queueSyncTasks([syncTask2]);
+      await tool._waitUntilSyncQueueDrained();
+
+      tool.queueSyncTaskValidator([syncTaskValidator2]);
+      await tool._waitUntilSyncValidatorQueueDrained();
+
+      assert.deepEqual(originalErrors, tool.getStats().totalErrors);
+
+      // Confirm it healed the issue
+      let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
+      assert.deepEqual(r1.rows.length, 0);
+    });
+
     test('Missing postgres row after create/update', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
       const startingErrors = tool.getStats().totalErrors;
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -81,14 +130,14 @@ export function syncTaskValidatorsTests() {
       assert.deepEqual(stable(r1.rows[0].item), stable(item1));
     });
 
-    test('Multiple validators, run out of order', async () => {
+    test('Multiple validators, different times, run out of order', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
       const originalTotalSyncValidatorsTasksSkipped = getFirebaseLiftPostgresSyncTool().getStats()
         .totalSyncValidatorsTasksSkipped;
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -104,7 +153,7 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
 
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1Update1);
+      await firestoreCollection.doc(item1.id).set(item1Update1);
       const {
         syncTask: syncTask2,
         syncTaskValidator: syncTaskValidator2
@@ -123,7 +172,7 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
 
       const item1Update2 = { ...item1, ...{ update2: `foo - ${Math.random()}` } };
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1Update2);
+      await firestoreCollection.doc(item1.id).set(item1Update2);
       const {
         syncTask: syncTask3,
         syncTaskValidator: syncTaskValidator3
@@ -155,13 +204,13 @@ export function syncTaskValidatorsTests() {
       );
     });
 
-    test('Synctask didnt run for some reason', async () => {
+    test('Create/Update syncTask failed to run', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
       const originalErrors = tool.getStats().totalErrors;
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -177,7 +226,7 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
 
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1Update1);
+      await firestoreCollection.doc(item1.id).set(item1Update1);
       const {
         syncTask: syncTask2,
         syncTaskValidator: syncTaskValidator2
@@ -208,13 +257,60 @@ export function syncTaskValidatorsTests() {
       assert.deepEqual(stable(r2.rows[0].item), stable(item1Update1));
     });
 
-    test('Synctask ran but objects dont match', async () => {
+    test('Delete syncTask failed to run', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
       const originalErrors = tool.getStats().totalErrors;
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
+      const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+        type: 'firestore',
+        collectionOrRecordPath: 'person',
+        firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
+          itemIdOrKey: item1.id,
+          type: 'create',
+          afterItem: item1,
+          beforeItem: undefined,
+          dbType: 'firestore'
+        })
+      });
+      tool.queueSyncTasks([syncTask]);
+      await tool._waitUntilSyncQueueDrained();
+
+      await firestoreCollection.doc(item1.id).delete();
+      const {
+        syncTask: syncTask2,
+        syncTaskValidator: syncTaskValidator2
+      } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+        type: 'firestore',
+        collectionOrRecordPath: 'person',
+        firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
+          itemIdOrKey: item1.id,
+          type: 'delete',
+          afterItem: undefined,
+          beforeItem: undefined,
+          dbType: 'firestore'
+        })
+      });
+
+      tool.queueSyncTaskValidator([syncTaskValidator2]);
+      await tool._waitUntilSyncValidatorQueueDrained();
+
+      assert.deepEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+
+      // Confirm it healed the issue
+      let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
+      assert.deepEqual(r1.rows.length, 0);
+    });
+
+    test('SyncTask ran but objects dont match', async () => {
+      const tool = getFirebaseLiftPostgresSyncTool();
+      await reset();
+      await firestoreCollection.doc(item1.id).set(item1);
+      const originalErrors = tool.getStats().totalErrors;
+
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -242,13 +338,12 @@ export function syncTaskValidatorsTests() {
       assert.deepEqual(stable(r1.rows[0].item), stable(item1));
     });
 
-    test('Basic delete validator', async () => {
+    test('Race Condition: same item, correct order, multiple validators', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
-      await firestoreCollection.doc(item1.id).set(item1);
-      const originalErrors = tool.getStats().totalErrors;
+      const originalStats = tool.getStats();
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -260,10 +355,9 @@ export function syncTaskValidatorsTests() {
           dbType: 'firestore'
         })
       });
-      tool.queueSyncTasks([syncTask]);
-      await tool._waitUntilSyncQueueDrained();
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).delete();
+      const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
+      await firestoreCollection.doc(item1.id).set(item1Update1);
       const {
         syncTask: syncTask2,
         syncTaskValidator: syncTaskValidator2
@@ -272,32 +366,45 @@ export function syncTaskValidatorsTests() {
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
           itemIdOrKey: item1.id,
-          type: 'delete',
-          afterItem: undefined,
-          beforeItem: undefined,
+          type: 'update',
+          afterItem: item1Update1,
+          beforeItem: item1,
           dbType: 'firestore'
         })
       });
-      tool.queueSyncTasks([syncTask2]);
+
+      tool.queueSyncTasks([syncTask, syncTask2]);
       await tool._waitUntilSyncQueueDrained();
 
+      tool._registerSyncValidatorTaskDebugFn(async () => {
+        await new Promise((r) => setTimeout(() => r(), 500));
+      });
+      tool.queueSyncTaskValidator([syncTaskValidator]);
+      await new Promise((r) => setTimeout(() => r(), 100));
+      assert.deepEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
+
       tool.queueSyncTaskValidator([syncTaskValidator2]);
+      await new Promise((r) => setTimeout(() => r(), 100));
+      assert.deepEqual(tool.getStats().totalSyncValidatorTasksPendingRetry, 1);
+
       await tool._waitUntilSyncValidatorQueueDrained();
-
-      assert.deepEqual(originalErrors, tool.getStats().totalErrors);
-
-      // Confirm it healed the issue
-      let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(r1.rows.length, 0);
+      assert.deepEqual(
+        tool.getStats().totalSyncValidatorTasksCurrentlyRunning,
+        originalStats.totalSyncValidatorTasksCurrentlyRunning
+      );
+      assert.deepEqual(
+        tool.getStats().totalSyncValidatorTasksPendingRetry,
+        originalStats.totalSyncValidatorTasksPendingRetry
+      );
+      assert.deepEqual(tool.getStats().totalErrors, originalStats.totalErrors);
     });
 
-    test('Delete sync task didnt run', async () => {
+    test('Race Condition: same item, incorrect order, multiple validators', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
-      await firestoreCollection.doc(item1.id).set(item1);
-      const originalErrors = tool.getStats().totalErrors;
+      const originalStats = tool.getStats();
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).set(item1);
+      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -309,10 +416,9 @@ export function syncTaskValidatorsTests() {
           dbType: 'firestore'
         })
       });
-      tool.queueSyncTasks([syncTask]);
-      await tool._waitUntilSyncQueueDrained();
 
-      await getFirebaseApp().firestore().collection(collection).doc(item1.id).delete();
+      const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
+      await firestoreCollection.doc(item1.id).set(item1Update1);
       const {
         syncTask: syncTask2,
         syncTaskValidator: syncTaskValidator2
@@ -321,54 +427,40 @@ export function syncTaskValidatorsTests() {
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
           itemIdOrKey: item1.id,
-          type: 'delete',
-          afterItem: undefined,
-          beforeItem: undefined,
+          type: 'update',
+          afterItem: item1Update1,
+          beforeItem: item1,
           dbType: 'firestore'
         })
       });
 
+      tool.queueSyncTasks([syncTask, syncTask2]);
+      await tool._waitUntilSyncQueueDrained();
+
+      tool._registerSyncValidatorTaskDebugFn(async () => {
+        await new Promise((r) => setTimeout(() => r(), 500));
+      });
       tool.queueSyncTaskValidator([syncTaskValidator2]);
+      await new Promise((r) => setTimeout(() => r(), 100));
+      assert.deepEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
+
+      tool.queueSyncTaskValidator([syncTaskValidator]);
+      await new Promise((r) => setTimeout(() => r(), 100));
+      assert.deepEqual(
+        tool.getStats().totalSyncValidatorTasksPendingRetry,
+        originalStats.totalSyncValidatorTasksPendingRetry
+      );
+
       await tool._waitUntilSyncValidatorQueueDrained();
-
-      assert.deepEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
-
-      // Confirm it healed the issue
-      let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(r1.rows.length, 0);
+      assert.deepEqual(
+        tool.getStats().totalSyncValidatorTasksCurrentlyRunning,
+        originalStats.totalSyncValidatorTasksCurrentlyRunning
+      );
+      assert.deepEqual(
+        tool.getStats().totalSyncValidatorTasksPendingRetry,
+        originalStats.totalSyncValidatorTasksPendingRetry
+      );
+      assert.deepEqual(tool.getStats().totalErrors, originalStats.totalErrors);
     });
-
-    /*
-
-  1. Mirror data to postgres
-  2. Incremental check if changes propigated to postgres
-    * After each write see if criticle columns have changed
-    * Add item to RTDB for check in several minutes
-  3. Full check of changes to postgres
-
-  4. Run derived checks
-
-*/
-
-    /* Race condition
-
-  1. Change is waiting to be processed
-  2. Doesn't match in firestore
-  3. Wait for 1 minutes (assume that is more than enough time for the queue to finish processing)
-
-
-  a) Missing in firestore
-  b) Don't match
-  c) Missing in postgres
-
-
-  1) Fetch all items in firebase
-  2) Process them one at a time
-  3) Any out of sync get them a 1-2 minute delay and process it again
-  4) Any still out of fix issue and record error
-
-
-
-  */
   });
 }
