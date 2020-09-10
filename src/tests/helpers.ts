@@ -33,6 +33,13 @@ export function init() {
   db.settings({ host: 'localhost:8080', ssl: false });
 }
 
+export function getFirebaseApp() {
+  if (!app) {
+    throw new Error('Please call init before running getFirebaseApp');
+  }
+  return app;
+}
+
 export async function reset() {
   console.log('Reset and clear data');
   await clearFirestoreData({ projectId: testFirebaseConfig.projectId });
@@ -65,7 +72,7 @@ export function getFirebaseLiftPostgresSyncTool() {
       auditPgs: [db2],
       collectionOrRecordPathMeta,
       errorHandler: (e) => {
-        console.log('Error');
+        console.log('Error Handler triggered');
         console.log(e);
       },
       firestore: app.firestore(),

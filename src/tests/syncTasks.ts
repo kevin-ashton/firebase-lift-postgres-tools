@@ -12,8 +12,8 @@ import * as assert from 'assert';
 import * as stable from 'json-stable-stringify';
 import { SyncTask } from '../models';
 
-export function firestoreSyncTests() {
-  describe('FirebaseLiftPostgresSyncTool Basics', () => {
+export function syncTasksTests() {
+  describe('FirebaseLiftPostgresSyncTool Sync Tasks Basics', () => {
     test('Ensure mirror tables are created on startup', async () => {
       console.log('Attempt to drop table');
       try {

@@ -1,12 +1,14 @@
 import { init } from './helpers';
 import { setOptions } from 'nano-test-runner';
-import { firestoreSyncTests } from './firestoreSync';
+import { syncTasksTests } from './syncTasks';
+import { syncTaskValidatorsTests } from './syncTaskValidators';
 
-setOptions({ runPattern: 'serial', suppressConsole: true });
+setOptions({ runPattern: 'serial', suppressConsole: false });
 
 async function main() {
   await init();
-  firestoreSyncTests();
+  // syncTasksTests();
+  syncTaskValidatorsTests();
 }
 
 main();

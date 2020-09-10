@@ -10,8 +10,7 @@ type SyncTaskDebuggerFn = (p: { task: any }) => Promise<void>;
 export type CollectionOrRecordPathMeta = { collectionOrRecordPath: string; source: 'rtdb' | 'firestore' };
 
 export class FirebaseLiftPostgresSyncTool {
-  private errorHandler: ErrorHanlder = null as any;
-
+  private _externalErrorHandler: ErrorHanlder = null as any;
   private mirrorPgs: { title: string; pool: Pool }[] = [];
   private auditPgs: { title: string; pool: Pool }[] = [];
 
@@ -29,6 +28,7 @@ export class FirebaseLiftPostgresSyncTool {
   private totalErrors = 0;
   private totalSyncTasksPendingRetry = 0;
   private totalSyncTasksSkipped = 0;
+  private totalSyncValidatorsTasksSkipped = 0;
 
   constructor(config: {
     mirrorsPgs: { title: string; pool: Pool }[];
@@ -48,7 +48,7 @@ export class FirebaseLiftPostgresSyncTool {
     this.collectionOrRecordPathMeta = config.collectionOrRecordPathMeta;
     this.rtdb = config.rtdb;
     this.firestore = config.firestore;
-    this.errorHandler = config.errorHandler;
+    this._externalErrorHandler = config.errorHandler;
     this.ensureMirrorTablesExists();
     this.ensureAuditTablesExists();
   }
@@ -56,6 +56,11 @@ export class FirebaseLiftPostgresSyncTool {
   public _registerSyncTaskDebugFn(fn: SyncTaskDebuggerFn) {
     this.syncTaskDebuggerFn = fn;
   }
+
+  private errorHandler: ErrorHanlder = (p) => {
+    this.totalErrors += 1;
+    this._externalErrorHandler(p);
+  };
 
   private async ensureMirrorTablesExists() {
     console.log('Running ensureMirrorTablesExists');
@@ -80,7 +85,6 @@ export class FirebaseLiftPostgresSyncTool {
                 validation_number bigint
               );`);
             } catch (ee) {
-              this.totalErrors += 1;
               const msg = `Trouble ensuring an mirror table has been created.`;
               console.error(msg);
               this.errorHandler({
@@ -122,7 +126,6 @@ export class FirebaseLiftPostgresSyncTool {
               CREATE INDEX ON audit_${baseTableName} (itemId);
               `);
             } catch (ee) {
-              this.totalErrors += 1;
               const msg = `Trouble ensuring an audit table has been created.`;
               console.error(msg);
               this.errorHandler({
@@ -145,7 +148,8 @@ export class FirebaseLiftPostgresSyncTool {
       totalSyncTasksWaitingInQueue: this.syncQueue.getPendingLength(),
       totalSyncTasksCurrentlyRunning: Object.keys(this.runningIdOrKeys).length,
       totalSyncTasksPendingRetry: this.totalSyncTasksPendingRetry,
-      totalSyncTasksSkipped: this.totalSyncTasksSkipped
+      totalSyncTasksSkipped: this.totalSyncTasksSkipped,
+      totalSyncValidatorsTasksSkipped: this.totalSyncValidatorsTasksSkipped
     };
   }
 
@@ -250,7 +254,7 @@ export class FirebaseLiftPostgresSyncTool {
                 );
               } else if (task.action === 'update') {
                 let item = task.afterItem;
-                if (r1.rows && r1.rows[0] && r1.rows[0].last_sync_task_date_ms > task.dateMS) {
+                if (extractLastSyncTaskDateMs(r1.rows[0]) > task.dateMS) {
                   // Looks like another sync task has updated things more recently. Skip update.
                   this.totalSyncTasksSkipped += 1;
                   return;
@@ -263,7 +267,6 @@ export class FirebaseLiftPostgresSyncTool {
                 await pg.pool.query(`delete from ${table} where id = $1`, [task.idOrKey]);
               }
             } catch (e) {
-              this.totalErrors += 1;
               this.errorHandler({
                 message: `Trouble mirroring in handleMirrorEvent.`,
                 meta: { task, errorMsg: e.message },
@@ -283,7 +286,6 @@ export class FirebaseLiftPostgresSyncTool {
                 ]
               );
             } catch (e) {
-              this.totalErrors += 1;
               this.errorHandler({
                 message: `Trouble adding audit in handleMirrorEvent.`,
                 meta: {
@@ -297,7 +299,6 @@ export class FirebaseLiftPostgresSyncTool {
           })
         ]);
       } catch (e) {
-        this.totalErrors += 1;
         this.errorHandler({
           message: `Trouble running handleSyncTasks.`,
           meta: {
@@ -324,7 +325,7 @@ export class FirebaseLiftPostgresSyncTool {
         });
         return;
       }
-      this.syncQueue.add(this.handleSyncTaskValidator(task));
+      this.syncValidatorQueue.add(this.handleSyncTaskValidator(task));
     });
   }
 
@@ -341,11 +342,13 @@ export class FirebaseLiftPostgresSyncTool {
         this.fetchItemFromFirebase({ collectionOrRecordPath: p.collectionOrRecordPath, idOrKey: p.idOrKey }),
         this.mirrorPgs[
           p.pgMirrorIndex
-        ].pool.query(`select id, last_sync_task_date_ms, item, from ${table} where id = $1`, [p.idOrKey])
-      ]);
+        ].pool.query(`select id, last_sync_task_date_ms, item from ${table} where id = $1`, [p.idOrKey])
+      ]).catch((e) => {
+        throw e;
+      });
 
       const firebaseObject = r1[0];
-      const pgObject = r1[1].rows[0].item || {};
+      const pgObject = r1[1].rows[0]?.item || null;
 
       if (firebaseObject && pgObject) {
         // Since both exists check if they are in sync
@@ -442,9 +445,10 @@ export class FirebaseLiftPostgresSyncTool {
         this.mirrorPgs.map(async (pg, index) => {
           try {
             const table = `mirror_${task.collectionOrRecordPath}`;
-            let r1 = await pg.pool.query(`select id, last_sync_task_date_ms, item, from ${table} where id = $1`, [
+            const r1 = await pg.pool.query(`select id, last_sync_task_date_ms, item from ${table} where id = $1`, [
               task.idOrKey
             ]);
+            const lastSyncTaskDateMs = extractLastSyncTaskDateMs(r1.rows[0]);
 
             if (task.action === 'create' || task.action === 'update') {
               if (r1.rows.length !== 1) {
@@ -459,12 +463,13 @@ export class FirebaseLiftPostgresSyncTool {
                 return;
               }
 
-              if (r1.rows[0].last_sync_task_date_ms > task.dateMS) {
+              if (lastSyncTaskDateMs > task.dateMS) {
                 // Since the lasted sync date is newer then we just ignore this
+                this.totalSyncValidatorsTasksSkipped += 1;
                 return;
               }
 
-              if (r1.rows[0].last_sync_task_date_ms < task.dateMS) {
+              if (lastSyncTaskDateMs < task.dateMS) {
                 await this.handleUnexpectedSyncItem({
                   collectionOrRecordPath: task.collectionOrRecordPath,
                   idOrKey: task.idOrKey,
@@ -476,7 +481,7 @@ export class FirebaseLiftPostgresSyncTool {
                 return;
               }
 
-              if (r1.rows[0].last_sync_task_date_ms === task.dateMS) {
+              if (lastSyncTaskDateMs === task.dateMS) {
                 if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
                   await this.handleUnexpectedSyncItem({
                     collectionOrRecordPath: task.collectionOrRecordPath,
@@ -510,7 +515,7 @@ export class FirebaseLiftPostgresSyncTool {
           } catch (e) {
             this.errorHandler({
               message: 'Error while running handleSyncTaskValidator',
-              meta: { task, pgTitle: pg.title }
+              meta: { task, pgTitle: pg.title, errorMsg: e.message }
             });
           }
         })
@@ -585,5 +590,15 @@ export class FirebaseLiftPostgresSyncTool {
     };
 
     return { syncTask, syncTaskValidator };
+  }
+}
+
+function extractLastSyncTaskDateMs(obj: any): number {
+  if (!obj) {
+    return 0;
+  } else if (obj['last_sync_task_date_ms']) {
+    return parseInt(obj['last_sync_task_date_ms']) || 0;
+  } else {
+    return 0;
   }
 }
