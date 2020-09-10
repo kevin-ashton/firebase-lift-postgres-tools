@@ -149,7 +149,9 @@ export class FirebaseLiftPostgresSyncTool {
       totalSyncTasksCurrentlyRunning: Object.keys(this.runningIdOrKeys).length,
       totalSyncTasksPendingRetry: this.totalSyncTasksPendingRetry,
       totalSyncTasksSkipped: this.totalSyncTasksSkipped,
-      totalSyncValidatorsTasksSkipped: this.totalSyncValidatorsTasksSkipped
+      totalSyncValidatorsTasksSkipped: this.totalSyncValidatorsTasksSkipped,
+      totalMirrorPgs: this.mirrorPgs.length,
+      totalAuditPgs: this.mirrorPgs.length
     };
   }
 
@@ -494,20 +496,16 @@ export class FirebaseLiftPostgresSyncTool {
                   return;
                 }
               }
-              // If date is older (then it has not refreshed)
-              // If date is newer then ignore (since we assume it has been updated more recently)
             } else if (task.action === 'delete') {
               if (r1.rows.length > 0) {
-                if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
-                  await this.handleUnexpectedSyncItem({
-                    collectionOrRecordPath: task.collectionOrRecordPath,
-                    idOrKey: task.idOrKey,
-                    dateMS: task.dateMS,
-                    msg: 'handleSyncTaskValidator delete a row shows up but it should have been deleted',
-                    pgMirrorIndex: index
-                  });
-                  return;
-                }
+                await this.handleUnexpectedSyncItem({
+                  collectionOrRecordPath: task.collectionOrRecordPath,
+                  idOrKey: task.idOrKey,
+                  dateMS: task.dateMS,
+                  msg: 'handleSyncTaskValidator delete a row shows up but it should have been deleted',
+                  pgMirrorIndex: index
+                });
+                return;
               }
             } else {
               this.errorHandler({ message: 'Unknown taskValidator action type', meta: { task } });
