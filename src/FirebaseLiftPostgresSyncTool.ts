@@ -7,6 +7,27 @@ import * as stable from 'json-stable-stringify';
 type ErrorHanlder = (p: { message: string; error?: any; meta?: any }) => void;
 type DebuggerFn = (p: { task: any }) => Promise<void>;
 
+interface FullMirrorValidationResultError {
+  status: 'failed';
+  errorMsg: string;
+}
+
+interface FullMirrorValidationResultFinished {
+  runId: string;
+  runStartMS: number;
+  runFinshMS: number;
+  durationOfRunHours: number;
+  status: 'finished';
+  initialRowCounts: {
+    [pgTitle: string]: { [collectionsOrRecordPath: string]: number };
+  };
+  totalRowsProcessed: number;
+  totalDocsProcessed: number;
+  totalErrors: number;
+}
+
+type FullMirrorValidationResult = FullMirrorValidationResultError | FullMirrorValidationResultFinished;
+
 export type CollectionOrRecordPathMeta = { collectionOrRecordPath: string; source: 'rtdb' | 'firestore' };
 
 export class FirebaseLiftPostgresSyncTool {
@@ -567,7 +588,61 @@ export class FirebaseLiftPostgresSyncTool {
     };
   }
 
-  public fullSyncValidation(p: { collectionsOrRecordPaths: string[] }) {
+  public async fullMirrorValidation(p: {
+    collectionsOrRecordPaths: string[];
+    progressLog: (str: string) => void;
+  }): Promise<FullMirrorValidationResult> {
+    let result: FullMirrorValidationResultFinished = {
+      durationOfRunHours: 0,
+      initialRowCounts: {},
+      status: 'finished',
+      runFinshMS: 0,
+      runId: `run-Date.now()`,
+      runStartMS: Date.now(),
+      totalDocsProcessed: 0,
+      totalErrors: 0,
+      totalRowsProcessed: 0
+    };
+    try {
+      // Make sure each collectionsOrRecordPath is valid and get initial size of tables
+      for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
+        const c = p.collectionsOrRecordPaths[i];
+        const v = this.collectionOrRecordPathMeta.find((e) => e.collectionOrRecordPath === c);
+        if (!v) {
+          throw new Error(`Unable to run fullMirrorValidation. ${c} is not a valid collectionOrRecordPath`);
+        }
+
+        let totalInitialRowCount = 0;
+        for (let i = 0; i < this.mirrorPgs.length; i++) {
+          const pg = this.mirrorPgs[i];
+          result.initialRowCounts[pg.title] = {};
+          for (let k = 0; p.collectionsOrRecordPaths.length; k++) {
+            const c = p.collectionsOrRecordPaths[k];
+            const table = `mirror_${c}`;
+            const r1 = await pg.pool.query(`select count(*) as count from ${table}`);
+            await pg.pool.query(`update ${table} set validation_number = $1`, [result.runId]);
+            if (r1.rows.length !== 1) {
+              throw new Error(
+                `Unexpected row count in fullMirrorValidation while checking initial length of mirror table. PgTitle: ${pg.title}. C: ${c}`
+              );
+            }
+            const originalRowCount = r1.rows[0].count;
+            totalInitialRowCount += originalRowCount;
+            result.initialRowCounts[pg.title][c] = originalRowCount;
+          }
+        }
+
+        // Fetch each item from FB
+        // Check each item against each mirror entry
+
+        // Find any rows that might have been missed based on the validation_number
+      }
+    } catch (e) {
+      return { status: 'failed', errorMsg: e.message };
+    }
+
+    return result;
+
     // Fetch each collection one at a time and validate it
     // Need progress and some post reporting
   }
