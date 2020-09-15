@@ -3,6 +3,7 @@ import { SyncTask, SyncTaskValidator } from './models';
 import * as fbAdmin from 'firebase-admin';
 import * as Queue from 'promise-queue';
 import * as stable from 'json-stable-stringify';
+import { fetchAndProcessFirestoreCollection, fetchAndProcessRtdbRecordPath } from './collectionProcessor';
 
 type ErrorHanlder = (p: { message: string; error?: any; meta?: any }) => void;
 type DebuggerFn = (p: { task: any }) => Promise<void>;
@@ -10,23 +11,41 @@ type DebuggerFn = (p: { task: any }) => Promise<void>;
 interface FullMirrorValidationResultError {
   status: 'failed';
   errorMsg: string;
+  currentFullMirrorValidationRunResult: FullMirrorValidationRunResult;
 }
 
-interface FullMirrorValidationResultFinished {
+interface FullMirrorValidationRunResult {
   runId: string;
-  runStartMS: number;
-  runFinshMS: number;
-  durationOfRunHours: number;
-  status: 'finished';
+  startMS: number;
+  finshMS?: number;
+  status: 'finished' | 'running';
   initialRowCounts: {
     [pgTitle: string]: { [collectionsOrRecordPath: string]: number };
   };
+  totalInitialRowsFromMirrorTables: number;
   totalRowsProcessed: number;
-  totalDocsProcessed: number;
+  totalDocsOrNodesProcessed: number;
   totalErrors: number;
 }
 
-type FullMirrorValidationResult = FullMirrorValidationResultError | FullMirrorValidationResultFinished;
+type UnexpectedResultStatus =
+  | 'ITEMS_WERE_IN_EXPECTED_STATE'
+  | 'ITEMS_DID_NOT_MATCH'
+  | 'ITEM_WAS_MISSING_IN_MIRROR'
+  | 'ITEM_WAS_NOT_DELETED_IN_MIRROR';
+
+export type PreMirrorObfuscationFn = (p: { item: any; collectionOrRecordPath: string }) => any;
+
+type ValidationErrorLogger = (pp: {
+  poolTitle: string;
+  errorType: 'ITEMS_DO_NOT_MATCH' | 'ITEM_MISSING_IN_MIRROR' | 'ITEM_NOT_DELETED_IN_MIRROR' | 'OTHER';
+  description?: string;
+  collectionOrRecordPathMeta: string;
+  item: any;
+  mirroredItem: any;
+}) => void;
+
+type FullMirrorValidationResult = FullMirrorValidationResultError | FullMirrorValidationRunResult;
 
 export type CollectionOrRecordPathMeta = { collectionOrRecordPath: string; source: 'rtdb' | 'firestore' };
 
@@ -56,6 +75,8 @@ export class FirebaseLiftPostgresSyncTool {
   private totalSyncValidatorTasksPendingRetry = 0;
   private totalSyncValidatorsTasksSkipped = 0;
 
+  private preMirrorObfuscation: PreMirrorObfuscationFn = (i) => i.item; // Usesd to transform the item before sending it to the pgMirror
+
   constructor(config: {
     mirrorsPgs: { title: string; pool: Pool }[];
     auditPgs: { title: string; pool: Pool }[];
@@ -65,6 +86,7 @@ export class FirebaseLiftPostgresSyncTool {
     syncQueueConcurrency: number;
     syncValidatorQueueConcurrency: number;
     errorHandler: (p: { message: string; error?: any }) => void;
+    preMirrorObfuscation?: PreMirrorObfuscationFn;
   }) {
     console.log('Init FirebaseLiftPostgresSyncTool');
     this.mirrorPgs = config.mirrorsPgs;
@@ -75,6 +97,11 @@ export class FirebaseLiftPostgresSyncTool {
     this.rtdb = config.rtdb;
     this.firestore = config.firestore;
     this._externalErrorHandler = config.errorHandler;
+
+    if (config.preMirrorObfuscation) {
+      this.preMirrorObfuscation = config.preMirrorObfuscation;
+    }
+
     this.ensureMirrorTablesExists();
     this.ensureAuditTablesExists();
   }
@@ -285,12 +312,20 @@ export class FirebaseLiftPostgresSyncTool {
                   return;
                 }
                 let item = task.afterItem;
+                item = this.preMirrorObfuscation({
+                  collectionOrRecordPath: task.collectionOrRecordPath,
+                  item: { ...item }
+                });
                 await pg.pool.query(
                   `insert into ${table} (id, item, updated_at, last_sync_task_date_ms) values ($1, $2, now(), $3)`,
                   [task.idOrKey, item, task.dateMS]
                 );
               } else if (task.action === 'update') {
                 let item = task.afterItem;
+                item = this.preMirrorObfuscation({
+                  collectionOrRecordPath: task.collectionOrRecordPath,
+                  item: { ...item }
+                });
                 if (extractLastSyncTaskDateMs(r1.rows[0]) > task.dateMS) {
                   // Looks like another sync task has updated things more recently. Skip update.
                   this.totalSyncTasksSkipped += 1;
@@ -317,8 +352,18 @@ export class FirebaseLiftPostgresSyncTool {
                 `insert into ${auditTable} (itemId, beforeItem, afterItem, action, recorded_at) values ($1, $2, $3, $4, now())`,
                 [
                   task.idOrKey,
-                  task.beforeItem ? task.beforeItem : {},
-                  task.afterItem ? task.afterItem : {},
+                  task.beforeItem
+                    ? this.preMirrorObfuscation({
+                        collectionOrRecordPath: task.collectionOrRecordPath,
+                        item: task.beforeItem
+                      })
+                    : {},
+                  task.afterItem
+                    ? this.preMirrorObfuscation({
+                        collectionOrRecordPath: task.collectionOrRecordPath,
+                        item: task.afterItem
+                      })
+                    : {},
                   task.action
                 ]
               );
@@ -366,13 +411,14 @@ export class FirebaseLiftPostgresSyncTool {
     });
   }
 
-  private async handleUnexpectedSyncItem(p: {
+  private async handleUnexpectedItemState(p: {
     idOrKey: string;
     collectionOrRecordPath: string;
     dateMS: number;
     msg: string;
     pgMirrorIndex: number;
-  }) {
+  }): Promise<{ result: UnexpectedResultStatus }> {
+    let result: UnexpectedResultStatus = 'ITEMS_WERE_IN_EXPECTED_STATE';
     try {
       const table = `mirror_${p.collectionOrRecordPath}`;
       const r1 = await Promise.all([
@@ -392,6 +438,7 @@ export class FirebaseLiftPostgresSyncTool {
         if (stable(pgObject) === stable(firebaseObject)) {
           // Since things are the same looks like it got synced correctly at some point
           // Do nothing
+          result = 'ITEMS_WERE_IN_EXPECTED_STATE';
         } else {
           await this.mirrorPgs[
             p.pgMirrorIndex
@@ -400,6 +447,7 @@ export class FirebaseLiftPostgresSyncTool {
             p.dateMS,
             p.idOrKey
           ]);
+          result = 'ITEMS_DID_NOT_MATCH';
           this.errorHandler({
             message: p.msg,
             meta: {
@@ -419,6 +467,7 @@ export class FirebaseLiftPostgresSyncTool {
           firebaseObject,
           p.dateMS
         ]);
+        result = 'ITEM_WAS_MISSING_IN_MIRROR';
         this.errorHandler({
           message: p.msg,
           meta: {
@@ -430,6 +479,7 @@ export class FirebaseLiftPostgresSyncTool {
         });
       } else if (!firebaseObject && pgObject) {
         await this.mirrorPgs[p.pgMirrorIndex].pool.query(`delete from ${table} where id = $1`, [p.idOrKey]);
+        result = 'ITEM_WAS_NOT_DELETED_IN_MIRROR';
         this.errorHandler({
           message: p.msg,
           meta: {
@@ -440,12 +490,15 @@ export class FirebaseLiftPostgresSyncTool {
           }
         });
       } else if (!firebaseObject && !pgObject) {
+        result = 'ITEMS_WERE_IN_EXPECTED_STATE';
         // Since both have been deleted they appear to be in sync.
         // Do nothing
       }
     } catch (e) {
       this.errorHandler({ message: 'Error running handleUnexpectedSyncItem', error: e, meta: p });
     }
+
+    return { result: result };
   }
 
   private async fetchItemFromFirebase(p: { idOrKey: string; collectionOrRecordPath: string }): Promise<Object | null> {
@@ -462,13 +515,13 @@ export class FirebaseLiftPostgresSyncTool {
       const r = await this.firestore.collection(p.collectionOrRecordPath).doc(p.idOrKey).get();
       const data = r.data();
       if (data) {
-        return data;
+        return this.preMirrorObfuscation({ collectionOrRecordPath: p.collectionOrRecordPath, item: { ...data } });
       }
     } else if (meta.source === 'rtdb') {
       const r = await this.rtdb.ref(`${p.collectionOrRecordPath}/${p.idOrKey}`).once('value');
       const data = r.val();
       if (data) {
-        return data;
+        return this.preMirrorObfuscation({ collectionOrRecordPath: p.collectionOrRecordPath, item: { ...data } });
       }
     } else {
       this.errorHandler({ message: `Unknown meta source in fetchItemFromFirebase` });
@@ -513,7 +566,7 @@ export class FirebaseLiftPostgresSyncTool {
               if (task.action === 'create' || task.action === 'update') {
                 if (r1.rows.length !== 1) {
                   // Since unexpected length we sync it just in case
-                  await this.handleUnexpectedSyncItem({
+                  await this.handleUnexpectedItemState({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
@@ -530,7 +583,7 @@ export class FirebaseLiftPostgresSyncTool {
                 }
 
                 if (lastSyncTaskDateMs < task.dateMS) {
-                  await this.handleUnexpectedSyncItem({
+                  await this.handleUnexpectedItemState({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
@@ -543,7 +596,7 @@ export class FirebaseLiftPostgresSyncTool {
 
                 if (lastSyncTaskDateMs === task.dateMS) {
                   if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
-                    await this.handleUnexpectedSyncItem({
+                    await this.handleUnexpectedItemState({
                       collectionOrRecordPath: task.collectionOrRecordPath,
                       idOrKey: task.idOrKey,
                       dateMS: task.dateMS,
@@ -556,7 +609,7 @@ export class FirebaseLiftPostgresSyncTool {
                 }
               } else if (task.action === 'delete') {
                 if (r1.rows.length > 0) {
-                  await this.handleUnexpectedSyncItem({
+                  await this.handleUnexpectedItemState({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
@@ -588,21 +641,62 @@ export class FirebaseLiftPostgresSyncTool {
     };
   }
 
+  private async collectionorRecordPathMirrorValidation(p: {
+    collectionOrRecordPathMeta: CollectionOrRecordPathMeta;
+    validationErrorLogger: ValidationErrorLogger;
+    batchSize: number;
+  }) {
+    if (p.collectionOrRecordPathMeta.source === 'firestore') {
+      fetchAndProcessFirestoreCollection({
+        firestore: this.firestore,
+        collection: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+        firestoreFetchBatchSize: p.batchSize * 10,
+        processFnConcurrency: p.batchSize,
+        processFn: async (x) => {
+          console.log('Item test');
+        }
+      });
+    } else if (p.collectionOrRecordPathMeta.source === 'rtdb') {
+      fetchAndProcessRtdbRecordPath({
+        rtdbBatchSize: p.batchSize * 10,
+        processFnConcurrency: p.batchSize,
+        recordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+        rtdb: this.rtdb,
+        processFn: async () => {
+          console.log('Process rtdb item');
+        }
+      });
+    } else {
+      throw new Error('Unknown meta source for fullMirrorValidation');
+    }
+  }
+
   public async fullMirrorValidation(p: {
     collectionsOrRecordPaths: string[];
-    progressLog: (str: string) => void;
+    batchSize: number;
+    progressLogger: (status: {
+      estimatedPercentComplete: number;
+      minutesHasRun: number;
+      currentResult: FullMirrorValidationRunResult;
+    }) => void;
+    validationErrorLogger: ValidationErrorLogger;
   }): Promise<FullMirrorValidationResult> {
-    let result: FullMirrorValidationResultFinished = {
-      durationOfRunHours: 0,
+    let result: FullMirrorValidationRunResult = {
       initialRowCounts: {},
       status: 'finished',
-      runFinshMS: 0,
-      runId: `run-Date.now()`,
-      runStartMS: Date.now(),
-      totalDocsProcessed: 0,
+      runId: `run-${Date.now()}`,
+      startMS: Date.now(),
+      totalInitialRowsFromMirrorTables: 0,
+      totalDocsOrNodesProcessed: 0,
       totalErrors: 0,
       totalRowsProcessed: 0
     };
+
+    const progressLoggerInterval = setInterval(() => {
+      const estimatedPercentComplete = result.totalDocsOrNodesProcessed / result.totalInitialRowsFromMirrorTables;
+      const minutesHasRun = (Date.now() - result.startMS) / 1000 / 60;
+      p.progressLogger({ currentResult: result, estimatedPercentComplete, minutesHasRun });
+    }, 5000);
     try {
       // Make sure each collectionsOrRecordPath is valid and get initial size of tables
       for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
@@ -611,8 +705,6 @@ export class FirebaseLiftPostgresSyncTool {
         if (!v) {
           throw new Error(`Unable to run fullMirrorValidation. ${c} is not a valid collectionOrRecordPath`);
         }
-
-        let totalInitialRowCount = 0;
         for (let i = 0; i < this.mirrorPgs.length; i++) {
           const pg = this.mirrorPgs[i];
           result.initialRowCounts[pg.title] = {};
@@ -627,24 +719,41 @@ export class FirebaseLiftPostgresSyncTool {
               );
             }
             const originalRowCount = r1.rows[0].count;
-            totalInitialRowCount += originalRowCount;
+            result.totalInitialRowsFromMirrorTables += originalRowCount;
             result.initialRowCounts[pg.title][c] = originalRowCount;
           }
         }
+        // Make sure we have meta for everything
+        const meta = this.collectionOrRecordPathMeta.find((t) => (t.collectionOrRecordPath = c));
+        if (!meta) {
+          throw new Error(`Cannot run fullMirrorValidation for ${c} with meta.`);
+        }
+      }
 
-        // Fetch each item from FB
-        // Check each item against each mirror entry
+      // Run the validations for each collectionsOrRecordPath
+      for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
+        const c = p.collectionsOrRecordPaths[i];
+        const meta = this.collectionOrRecordPathMeta.find((t) => (t.collectionOrRecordPath = c));
+        if (!meta) {
+          throw new Error(`Cannot run fullMirrorValidation for ${c} with meta.`);
+        }
 
-        // Find any rows that might have been missed based on the validation_number
+        await this.collectionorRecordPathMirrorValidation({
+          batchSize: p.batchSize,
+          collectionOrRecordPathMeta: meta,
+          validationErrorLogger: p.validationErrorLogger
+        });
       }
     } catch (e) {
-      return { status: 'failed', errorMsg: e.message };
+      return { status: 'failed', errorMsg: e.message, currentFullMirrorValidationRunResult: result };
+    } finally {
+      clearInterval(progressLoggerInterval);
     }
 
-    return result;
+    result.status = 'finished';
+    result.finshMS = Date.now();
 
-    // Fetch each collection one at a time and validate it
-    // Need progress and some post reporting
+    return result;
   }
 
   public static generateSyncTaskFromWriteTrigger(p: {

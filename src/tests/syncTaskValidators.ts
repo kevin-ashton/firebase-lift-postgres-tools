@@ -5,7 +5,8 @@ import {
   getFirebaseApp,
   collectionOrRecordPathMeta,
   generateMockFirebaseChangeObject,
-  getPool1
+  getPool1,
+  exampleObfuscateFn
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
@@ -16,6 +17,8 @@ const item1 = {
   foo: 'foo ' + Math.random(),
   bar: 'bar ' + Math.random()
 };
+
+const item1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: item1 });
 
 const collection = collectionOrRecordPathMeta[0].collectionOrRecordPath;
 const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
@@ -47,7 +50,7 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
-      assert.deepEqual(startingErrors, tool.getStats().totalErrors);
+      assert.deepStrictEqual(startingErrors, tool.getStats().totalErrors);
     });
 
     test('Basic delete Validator', async () => {
@@ -92,11 +95,11 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(originalErrors, tool.getStats().totalErrors);
+      assert.deepStrictEqual(originalErrors, tool.getStats().totalErrors);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(r1.rows.length, 0);
+      assert.deepStrictEqual(r1.rows.length, 0);
     });
 
     test('Missing postgres row after create/update', async () => {
@@ -124,10 +127,10 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncValidatorQueueDrained();
       // Confirm an error occured
-      assert.deepEqual(startingErrors + 1, getFirebaseLiftPostgresSyncTool().getStats().totalErrors);
+      assert.deepStrictEqual(startingErrors + 1, getFirebaseLiftPostgresSyncTool().getStats().totalErrors);
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
     });
 
     test('Multiple validators, different times, run out of order', async () => {
@@ -193,12 +196,12 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator3]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(originalTotalSyncValidatorsTasksSkipped, tool.getStats().totalSyncValidatorsTasksSkipped);
+      assert.deepStrictEqual(originalTotalSyncValidatorsTasksSkipped, tool.getStats().totalSyncValidatorsTasksSkipped);
 
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(
+      assert.deepStrictEqual(
         originalTotalSyncValidatorsTasksSkipped + tool.getStats().totalMirrorPgs,
         tool.getStats().totalSyncValidatorsTasksSkipped
       );
@@ -226,6 +229,7 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
 
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
+      const item1Update1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: item1Update1 });
       await firestoreCollection.doc(item1.id).set(item1Update1);
       const {
         syncTask: syncTask2,
@@ -247,14 +251,14 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+      assert.deepStrictEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(item1Update1));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1Update1_Obfus));
 
       let r2 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(item1Update1));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1Update1_Obfus));
     });
 
     test('Delete syncTask failed to run', async () => {
@@ -297,11 +301,11 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+      assert.deepStrictEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(r1.rows.length, 0);
+      assert.deepStrictEqual(r1.rows.length, 0);
     });
 
     test('SyncTask ran but objects dont match', async () => {
@@ -331,11 +335,11 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(originalErrors + 1, tool.getStats().totalErrors);
+      assert.deepStrictEqual(originalErrors + 1, tool.getStats().totalErrors);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
     });
 
     test('Race Condition: same item, correct order, multiple validators', async () => {
@@ -381,22 +385,22 @@ export function syncTaskValidatorsTests() {
       });
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await new Promise((r) => setTimeout(() => r(), 100));
-      assert.deepEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
+      assert.deepStrictEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
 
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await new Promise((r) => setTimeout(() => r(), 100));
-      assert.deepEqual(tool.getStats().totalSyncValidatorTasksPendingRetry, 1);
+      assert.deepStrictEqual(tool.getStats().totalSyncValidatorTasksPendingRetry, 1);
 
       await tool._waitUntilSyncValidatorQueueDrained();
-      assert.deepEqual(
+      assert.deepStrictEqual(
         tool.getStats().totalSyncValidatorTasksCurrentlyRunning,
         originalStats.totalSyncValidatorTasksCurrentlyRunning
       );
-      assert.deepEqual(
+      assert.deepStrictEqual(
         tool.getStats().totalSyncValidatorTasksPendingRetry,
         originalStats.totalSyncValidatorTasksPendingRetry
       );
-      assert.deepEqual(tool.getStats().totalErrors, originalStats.totalErrors);
+      assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors);
     });
 
     test('Race Condition: same item, incorrect order, multiple validators', async () => {
@@ -442,25 +446,25 @@ export function syncTaskValidatorsTests() {
       });
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await new Promise((r) => setTimeout(() => r(), 100));
-      assert.deepEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
+      assert.deepStrictEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
 
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await new Promise((r) => setTimeout(() => r(), 100));
-      assert.deepEqual(
+      assert.deepStrictEqual(
         tool.getStats().totalSyncValidatorTasksPendingRetry,
         originalStats.totalSyncValidatorTasksPendingRetry
       );
 
       await tool._waitUntilSyncValidatorQueueDrained();
-      assert.deepEqual(
+      assert.deepStrictEqual(
         tool.getStats().totalSyncValidatorTasksCurrentlyRunning,
         originalStats.totalSyncValidatorTasksCurrentlyRunning
       );
-      assert.deepEqual(
+      assert.deepStrictEqual(
         tool.getStats().totalSyncValidatorTasksPendingRetry,
         originalStats.totalSyncValidatorTasksPendingRetry
       );
-      assert.deepEqual(tool.getStats().totalErrors, originalStats.totalErrors);
+      assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors);
     });
   });
 }

@@ -3,7 +3,7 @@ import { queue } from 'async';
 
 export async function fetchAndProcessFirestoreCollection(p: {
   firestoreFetchBatchSize: number;
-  app: admin.app.App;
+  firestore: admin.firestore.Firestore;
   processFnConcurrency: number;
   collection: string;
   processFn: (item: any) => Promise<void>;
@@ -22,7 +22,7 @@ export async function fetchAndProcessFirestoreCollection(p: {
   }, p.processFnConcurrency);
 
   while (true) {
-    let q = p.app.firestore().collection(p.collection).orderBy('id', 'asc').limit(p.firestoreFetchBatchSize);
+    let q = p.firestore.collection(p.collection).orderBy('id', 'asc').limit(p.firestoreFetchBatchSize);
 
     if (lastDoc) {
       q = q.startAfter(lastDoc);
@@ -48,16 +48,16 @@ export async function fetchAndProcessFirestoreCollection(p: {
 }
 
 export async function fetchAndProcessRtdbRecordPath(p: {
-  batchSize: number;
-  app: admin.app.App;
+  rtdbBatchSize: number;
+  rtdb: admin.database.Database;
   processFnConcurrency: number;
   recordPath: string;
   processFn: (item: any) => Promise<void>;
 }) {
   console.log(`Fetch and process for ${p.recordPath} in RTDB`);
 
-  if (p.batchSize < 3) {
-    throw new Error('Batch size cannot be less than 3');
+  if (p.rtdbBatchSize < 2) {
+    throw new Error('Batch size cannot be less than 2');
   }
 
   let lastDocKey: string | null = null;
@@ -72,7 +72,7 @@ export async function fetchAndProcessRtdbRecordPath(p: {
   }, p.processFnConcurrency);
 
   while (true) {
-    let ref = p.app.database().ref(p.recordPath).orderByKey().limitToFirst(p.batchSize);
+    let ref = p.rtdb.ref(p.recordPath).orderByKey().limitToFirst(p.rtdbBatchSize);
     if (lastDocKey) {
       ref = ref.startAt(lastDocKey);
     }
@@ -97,7 +97,7 @@ export async function fetchAndProcessRtdbRecordPath(p: {
       await processQueue.drain();
     }
 
-    if (q.numChildren() !== p.batchSize) {
+    if (q.numChildren() !== p.rtdbBatchSize) {
       break;
     }
   }

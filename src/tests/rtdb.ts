@@ -6,7 +6,8 @@ import {
   collectionOrRecordPathMeta,
   generateMockFirebaseChangeObject,
   getPool1,
-  getPool2
+  getPool2,
+  exampleObfuscateFn
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
@@ -17,6 +18,8 @@ const item1 = {
   foo: 'foo ' + Math.random(),
   bar: 'bar ' + Math.random()
 };
+
+const item1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'device', item: item1 });
 
 const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
 
@@ -47,12 +50,12 @@ export async function rtdbBasicTests() {
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncQueueDrained();
 
-      assert.deepEqual(tool.getStats().totalErrors, orignalStats.totalErrors);
+      assert.deepStrictEqual(tool.getStats().totalErrors, orignalStats.totalErrors);
 
       let r1 = await getPool1().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
       let r2 = await getPool2().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_Obfus));
     });
 
     test('Ensure has the ability to sync from rtdb', async () => {
@@ -80,18 +83,18 @@ export async function rtdbBasicTests() {
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
       await getPool1().query(`update mirror_${rtdbRecordPath} set item = $1 where id = $2`, [item1Update1, item1.id]);
 
-      assert.deepEqual(tool.getStats().totalErrors, originalStats.totalErrors);
+      assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors);
 
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepEqual(tool.getStats().totalErrors, originalStats.totalErrors + 1);
+      assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors + 1);
 
       // Make sure it has healed
       let r1 = await getPool1().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
       let r2 = await getPool2().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_Obfus));
     });
   });
 }

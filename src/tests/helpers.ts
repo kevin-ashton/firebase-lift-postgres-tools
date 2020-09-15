@@ -1,5 +1,9 @@
 import { clearFirestoreData } from '@firebase/testing';
-import { FirebaseLiftPostgresSyncTool, CollectionOrRecordPathMeta } from '../FirebaseLiftPostgresSyncTool';
+import {
+  FirebaseLiftPostgresSyncTool,
+  CollectionOrRecordPathMeta,
+  PreMirrorObfuscationFn
+} from '../FirebaseLiftPostgresSyncTool';
 import * as fbAdmin from 'firebase-admin';
 import * as pg from 'pg';
 
@@ -63,6 +67,10 @@ export async function reset() {
 
 let tool: FirebaseLiftPostgresSyncTool;
 
+export const exampleObfuscateFn: PreMirrorObfuscationFn = (p) => {
+  return { ...p.item, ...{ obfus: `${p.collectionOrRecordPath} - obfus` } };
+};
+
 export function getFirebaseLiftPostgresSyncTool() {
   if (!tool) {
     const db1 = { title: 'main_db', pool: getPool1() };
@@ -75,6 +83,7 @@ export function getFirebaseLiftPostgresSyncTool() {
         console.log('Error Handler triggered');
         console.log(e);
       },
+      preMirrorObfuscation: exampleObfuscateFn,
       firestore: app.firestore(),
       rtdb: app.database(),
       syncQueueConcurrency: 10,

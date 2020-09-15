@@ -4,7 +4,8 @@ import {
   generateMockFirebaseChangeObject,
   collectionOrRecordPathMeta,
   reset,
-  getPool2
+  getPool2,
+  exampleObfuscateFn
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import { describe, run, test, otest, setOptions } from 'nano-test-runner';
@@ -29,7 +30,7 @@ export function syncTasksTests() {
       let r = await getPool1().query(
         `select count(*) from mirror_${collectionOrRecordPathMeta[0].collectionOrRecordPath}`
       );
-      assert.deepEqual(r.rows.length, 1);
+      assert.deepStrictEqual(r.rows.length, 1);
     });
 
     const item1 = {
@@ -37,6 +38,8 @@ export function syncTasksTests() {
       foo: 'foo ' + Math.random(),
       bar: 'bar ' + Math.random()
     };
+
+    const item1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: item1 });
 
     let createTask = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
       type: 'firestore',
@@ -57,15 +60,16 @@ export function syncTasksTests() {
 
     test('Create item into mirror/audit tables', async () => {
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(item1));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(item1));
-      let r3 = await getPool2().query(`select * from audit_person where itemId = $1`, [item1.id]);
-      assert.deepEqual(stable(r3.rows[0].afteritem), stable(item1));
-      assert.deepEqual(stable(r3.rows[0].beforeitem), stable({}));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_Obfus));
+      // let r3 = await getPool2().query(`select * from audit_person where itemId = $1`, [item1.id]);
+      // assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(item1_Obfus));
+      // assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable({}));
     });
 
     let updatedItem = { ...item1, ...{ foo: 'foo ' + Math.random() } };
+    const updatedItem_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: updatedItem });
     let updateTask = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
       type: 'firestore',
       collectionOrRecordPath: 'person',
@@ -84,15 +88,15 @@ export function syncTasksTests() {
 
     test('Update item into mirror/audit tables', async () => {
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(updatedItem));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem_Obfus));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(updatedItem));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(updatedItem_Obfus));
       let r3 = await getPool2().query(
         `select * from audit_person where itemId = $1 order by recorded_at desc limit 1`,
         [item1.id]
       );
-      assert.deepEqual(stable(r3.rows[0].beforeitem), stable(item1));
-      assert.deepEqual(stable(r3.rows[0].afteritem), stable(updatedItem));
+      assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem_Obfus));
     });
 
     let deleteTask = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
@@ -115,15 +119,15 @@ export function syncTasksTests() {
 
     test('Delete item into mirror/audit tables', async () => {
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(r1.rows.length, 0);
+      assert.deepStrictEqual(r1.rows.length, 0);
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(r2.rows.length, 0);
+      assert.deepStrictEqual(r2.rows.length, 0);
       let r3 = await getPool2().query(
         `select * from audit_person where itemId = $1 order by recorded_at desc limit 1`,
         [item1.id]
       );
-      assert.deepEqual(stable(r3.rows[0].beforeitem), stable(updatedItem));
-      assert.deepEqual(stable(r3.rows[0].afteritem), stable({}));
+      assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(updatedItem_Obfus));
+      assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable({}));
     });
 
     test('Race condition (2 tasks, same item, same moment, correct order)', async () => {
@@ -143,25 +147,26 @@ export function syncTasksTests() {
       await new Promise((r) => setTimeout(() => r(), 200));
 
       // Make sure there is a new pendingRetry
-      assert.deepEqual(
+      assert.deepStrictEqual(
         originalPendingRetry + 1,
         getFirebaseLiftPostgresSyncTool().getStats().totalSyncTasksPendingRetry
       );
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
 
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(updatedItem));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem_Obfus));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(updatedItem));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(updatedItem_Obfus));
       let r3 = await getPool2().query(
         `select * from audit_person where itemId = $1 order by recorded_at desc limit 1`,
         [item1.id]
       );
-      assert.deepEqual(stable(r3.rows[0].beforeitem), stable(item1));
-      assert.deepEqual(stable(r3.rows[0].afteritem), stable(updatedItem));
+      assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem_Obfus));
     });
 
     const updateItem2 = { ...updatedItem, ...{ foo: 'foo ' + Math.random() } };
+    const updatedItem2_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: updateItem2 });
     const updateTask2: SyncTask = {
       ...updateTask,
       ...{ dateMS: updateTask.dateMS + 100, beforeItem: updatedItem, afterItem: updateItem2 }
@@ -188,7 +193,7 @@ export function syncTasksTests() {
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([updateTask]);
       await new Promise((r) => setTimeout(() => r(), 200));
 
-      assert.deepEqual(
+      assert.deepStrictEqual(
         originalTotalSyncTasksSkipped + 1,
         getFirebaseLiftPostgresSyncTool().getStats().totalSyncTasksSkipped
       );
@@ -196,15 +201,15 @@ export function syncTasksTests() {
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
 
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(updateItem2));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem2_Obfus));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(updateItem2));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(updatedItem2_Obfus));
       let r3 = await getPool2().query(
         `select * from audit_person where itemId = $1 order by recorded_at desc limit 1`,
         [item1.id]
       );
-      assert.deepEqual(stable(r3.rows[0].beforeitem), stable(updatedItem));
-      assert.deepEqual(stable(r3.rows[0].afteritem), stable(updateItem2));
+      assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(updatedItem_Obfus));
+      assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem2_Obfus));
     });
 
     test('Race condition (2 tasks, same item, not same moment, wrong order)', async () => {
@@ -225,7 +230,7 @@ export function syncTasksTests() {
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([updateTask]);
       await new Promise((r) => setTimeout(() => r(), 500));
 
-      assert.deepEqual(
+      assert.deepStrictEqual(
         originalTotalSyncTasksSkipped + 2, // skip by two since we have two mirror targets
         getFirebaseLiftPostgresSyncTool().getStats().totalSyncTasksSkipped
       );
@@ -233,9 +238,9 @@ export function syncTasksTests() {
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
 
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r1.rows[0].item), stable(updateItem2));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem2_Obfus));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepEqual(stable(r2.rows[0].item), stable(updateItem2));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(updatedItem2_Obfus));
       // We don't need to check the audit since it should still record both. We don't care as much of they are slighly out of order.
     });
   });
