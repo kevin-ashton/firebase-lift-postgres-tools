@@ -15,7 +15,7 @@ interface FullMirrorValidationResultError {
 }
 
 interface FullMirrorValidationRunResult {
-  runId: string;
+  runId: number;
   startMS: number;
   finshMS?: number;
   status: 'finished' | 'running';
@@ -26,6 +26,7 @@ interface FullMirrorValidationRunResult {
   totalRowsProcessed: number;
   totalDocsOrNodesProcessed: number;
   totalErrors: number;
+  validationResults: Record<UnexpectedResultStatus, number>;
 }
 
 type UnexpectedResultStatus =
@@ -595,7 +596,15 @@ export class FirebaseLiftPostgresSyncTool {
                 }
 
                 if (lastSyncTaskDateMs === task.dateMS) {
-                  if (stable(r1.rows[0].item) !== stable(task.afterItem)) {
+                  if (
+                    stable(r1.rows[0].item) !==
+                    stable(
+                      this.preMirrorObfuscation({
+                        item: task.afterItem,
+                        collectionOrRecordPath: task.collectionOrRecordPath
+                      })
+                    )
+                  ) {
                     await this.handleUnexpectedItemState({
                       collectionOrRecordPath: task.collectionOrRecordPath,
                       idOrKey: task.idOrKey,
@@ -647,7 +656,7 @@ export class FirebaseLiftPostgresSyncTool {
     currentResult: FullMirrorValidationRunResult;
     batchSize: number;
   }) {
-    const table = `mirror_${p.collectionOrRecordPathMeta}`;
+    const table = `mirror_${p.collectionOrRecordPathMeta.collectionOrRecordPath}`;
     const validateItem = async (item: any) => {
       try {
         for (let i = 0; i < this.mirrorPgs.length; i++) {
@@ -663,6 +672,7 @@ export class FirebaseLiftPostgresSyncTool {
               msg: '',
               pgMirrorIndex: i
             });
+            p.currentResult.validationResults[result] += 1;
             if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
               p.currentResult.totalErrors += 1;
               p.validationErrorLogger({
@@ -689,6 +699,7 @@ export class FirebaseLiftPostgresSyncTool {
                 msg: '',
                 pgMirrorIndex: i
               });
+              p.currentResult.validationResults[result] += 1;
 
               if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
                 p.currentResult.totalErrors += 1;
@@ -701,6 +712,8 @@ export class FirebaseLiftPostgresSyncTool {
                   description: `Some items did not match while running collectionorRecordPathMirrorValidation`
                 });
               }
+            } else {
+              p.currentResult.validationResults['ITEMS_WERE_IN_EXPECTED_STATE'] += 1;
             }
           }
           await pp.pool.query(`update ${table} set validation_number = 0 where id = $1`, [item.id]);
@@ -749,6 +762,7 @@ export class FirebaseLiftPostgresSyncTool {
           msg: '',
           pgMirrorIndex: i
         });
+        p.currentResult.validationResults[result] += 1;
         if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
           p.currentResult.totalErrors += 1;
           p.validationErrorLogger({
@@ -759,6 +773,8 @@ export class FirebaseLiftPostgresSyncTool {
             poolTitle: pp.title,
             description: `Some items found in PG when we were expecting them to be gone while running collectionorRecordPathMirrorValidation`
           });
+        } else {
+          p.currentResult.validationResults['ITEMS_WERE_IN_EXPECTED_STATE'] += 1;
         }
       }
     }
@@ -774,14 +790,21 @@ export class FirebaseLiftPostgresSyncTool {
     }) => void;
     validationErrorLogger: ValidationErrorLogger;
   }): Promise<FullMirrorValidationResult> {
+    let x = this.collectionOrRecordPathMeta;
     let result: FullMirrorValidationRunResult = {
       initialRowCounts: {},
       status: 'finished',
-      runId: `run-${Date.now()}`,
+      runId: Date.now(),
       startMS: Date.now(),
       totalInitialRowsFromMirrorTables: 0,
       totalDocsOrNodesProcessed: 0,
       totalErrors: 0,
+      validationResults: {
+        ITEMS_DID_NOT_MATCH: 0,
+        ITEMS_WERE_IN_EXPECTED_STATE: 0,
+        ITEM_WAS_MISSING_IN_MIRROR: 0,
+        ITEM_WAS_NOT_DELETED_IN_MIRROR: 0
+      },
       totalRowsProcessed: 0
     };
 
@@ -792,41 +815,36 @@ export class FirebaseLiftPostgresSyncTool {
     }, 5000);
     try {
       // Make sure each collectionsOrRecordPath is valid and get initial size of tables
-      for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
-        const c = p.collectionsOrRecordPaths[i];
-        const v = this.collectionOrRecordPathMeta.find((e) => e.collectionOrRecordPath === c);
-        if (!v) {
-          throw new Error(`Unable to run fullMirrorValidation. ${c} is not a valid collectionOrRecordPath`);
-        }
-        for (let i = 0; i < this.mirrorPgs.length; i++) {
-          const pg = this.mirrorPgs[i];
-          result.initialRowCounts[pg.title] = {};
-          for (let k = 0; p.collectionsOrRecordPaths.length; k++) {
-            const c = p.collectionsOrRecordPaths[k];
-            const table = `mirror_${c}`;
-            const r1 = await pg.pool.query(`select count(*) as count from ${table}`);
-            await pg.pool.query(`update ${table} set validation_number = $1`, [result.runId]);
-            if (r1.rows.length !== 1) {
-              throw new Error(
-                `Unexpected row count in fullMirrorValidation while checking initial length of mirror table. PgTitle: ${pg.title}. C: ${c}`
-              );
-            }
-            const originalRowCount = r1.rows[0].count;
-            result.totalInitialRowsFromMirrorTables += originalRowCount;
-            result.initialRowCounts[pg.title][c] = originalRowCount;
+
+      for (let k = 0; k < this.mirrorPgs.length; k++) {
+        const pg = this.mirrorPgs[k];
+        result.initialRowCounts[pg.title] = {};
+
+        for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
+          const c = p.collectionsOrRecordPaths[i];
+          const v = this.collectionOrRecordPathMeta.find((e) => e.collectionOrRecordPath === c);
+          if (!v) {
+            throw new Error(`Unable to run fullMirrorValidation. ${c} is not a valid collectionOrRecordPath`);
           }
-        }
-        // Make sure we have meta for everything
-        const meta = this.collectionOrRecordPathMeta.find((t) => (t.collectionOrRecordPath = c));
-        if (!meta) {
-          throw new Error(`Cannot run fullMirrorValidation for ${c} with meta.`);
+
+          const table = `mirror_${c}`;
+          const r1 = await pg.pool.query(`select count(*) as count from ${table}`);
+          await pg.pool.query(`update ${table} set validation_number = $1`, [result.runId]);
+          if (r1.rows.length !== 1) {
+            throw new Error(
+              `Unexpected row count in fullMirrorValidation while checking initial length of mirror table. PgTitle: ${pg.title}. C: ${c}`
+            );
+          }
+          const originalRowCount = r1.rows[0].count;
+          result.totalInitialRowsFromMirrorTables += parseInt(originalRowCount);
+          result.initialRowCounts[pg.title][c] = originalRowCount;
         }
       }
 
       // Run the validations for each collectionsOrRecordPath
       for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
         const c = p.collectionsOrRecordPaths[i];
-        const meta = this.collectionOrRecordPathMeta.find((t) => (t.collectionOrRecordPath = c));
+        const meta = this.collectionOrRecordPathMeta.find((t) => t.collectionOrRecordPath === c);
         if (!meta) {
           throw new Error(`Cannot run fullMirrorValidation for ${c} with meta.`);
         }

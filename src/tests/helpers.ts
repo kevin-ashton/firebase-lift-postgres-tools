@@ -47,6 +47,7 @@ export function getFirebaseApp() {
 export async function reset() {
   console.log('Reset and clear data');
   await clearFirestoreData({ projectId: testFirebaseConfig.projectId });
+  getFirebaseApp().database().ref('/').remove();
 
   const baseExampleTableNames = collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
   for (let i = 0; i < baseExampleTableNames.length; i++) {
