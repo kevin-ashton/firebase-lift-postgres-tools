@@ -38,9 +38,9 @@ export type PreMirrorObfuscationFn = (p: { item: any; collectionOrRecordPath: st
 
 type ValidationErrorLogger = (pp: {
   poolTitle: string;
-  errorType: 'ITEMS_DO_NOT_MATCH' | 'ITEM_MISSING_IN_MIRROR' | 'ITEM_NOT_DELETED_IN_MIRROR' | 'OTHER';
+  errorType: UnexpectedResultStatus;
   description?: string;
-  collectionOrRecordPathMeta: string;
+  collectionOrRecordPath: string;
   item: any;
   mirroredItem: any;
 }) => void;
@@ -644,30 +644,123 @@ export class FirebaseLiftPostgresSyncTool {
   private async collectionorRecordPathMirrorValidation(p: {
     collectionOrRecordPathMeta: CollectionOrRecordPathMeta;
     validationErrorLogger: ValidationErrorLogger;
+    currentResult: FullMirrorValidationRunResult;
     batchSize: number;
   }) {
+    const table = `mirror_${p.collectionOrRecordPathMeta}`;
+    const validateItem = async (item: any) => {
+      try {
+        for (let i = 0; i < this.mirrorPgs.length; i++) {
+          const pp = this.mirrorPgs[i];
+
+          const r1 = await pp.pool.query(`select * from ${table} where id = $1`, [item.id]);
+          if (r1.rows.length === 0) {
+            // Might have an issue where item missing in PG
+            const { result } = await this.handleUnexpectedItemState({
+              collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+              dateMS: Date.now(),
+              idOrKey: item.id,
+              msg: '',
+              pgMirrorIndex: i
+            });
+            if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
+              p.currentResult.totalErrors += 1;
+              p.validationErrorLogger({
+                collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+                errorType: result,
+                item,
+                mirroredItem: {},
+                poolTitle: pp.title,
+                description: `Some items not found in PG collectionorRecordPathMirrorValidation`
+              });
+            }
+          } else {
+            const dbItem = r1.rows[0].item;
+            const item_obfus = this.preMirrorObfuscation({
+              collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+              item: { ...item }
+            });
+            if (stable(dbItem) !== stable(item_obfus)) {
+              // Might have an issue where pg and firebase don't match
+              const { result } = await this.handleUnexpectedItemState({
+                collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+                dateMS: Date.now(),
+                idOrKey: item.id,
+                msg: '',
+                pgMirrorIndex: i
+              });
+
+              if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
+                p.currentResult.totalErrors += 1;
+                p.validationErrorLogger({
+                  collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+                  errorType: result,
+                  item,
+                  mirroredItem: r1.rows[0].item,
+                  poolTitle: pp.title,
+                  description: `Some items did not match while running collectionorRecordPathMirrorValidation`
+                });
+              }
+            }
+          }
+          await pp.pool.query(`update ${table} set validation_number = 0 where id = $1`, [item.id]);
+          p.currentResult.totalRowsProcessed += 1;
+        }
+      } catch (e) {
+        p.currentResult.totalErrors += 1;
+      } finally {
+        p.currentResult.totalDocsOrNodesProcessed += 1;
+      }
+    };
+
     if (p.collectionOrRecordPathMeta.source === 'firestore') {
-      fetchAndProcessFirestoreCollection({
+      await fetchAndProcessFirestoreCollection({
         firestore: this.firestore,
         collection: p.collectionOrRecordPathMeta.collectionOrRecordPath,
         firestoreFetchBatchSize: p.batchSize * 10,
         processFnConcurrency: p.batchSize,
-        processFn: async (x) => {
-          console.log('Item test');
-        }
+        processFn: validateItem
       });
     } else if (p.collectionOrRecordPathMeta.source === 'rtdb') {
-      fetchAndProcessRtdbRecordPath({
+      await fetchAndProcessRtdbRecordPath({
         rtdbBatchSize: p.batchSize * 10,
         processFnConcurrency: p.batchSize,
         recordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
         rtdb: this.rtdb,
-        processFn: async () => {
-          console.log('Process rtdb item');
-        }
+        processFn: validateItem
       });
     } else {
       throw new Error('Unknown meta source for fullMirrorValidation');
+    }
+
+    for (let i = 0; i < this.mirrorPgs.length; i++) {
+      let pp = this.mirrorPgs[i];
+      let potentialExtraItems = await pp.pool.query(`select * from ${table} where validation_number = $1`, [
+        p.currentResult.runId
+      ]);
+
+      for (let k = 0; k < potentialExtraItems.rows.length; k++) {
+        // Might have an issue where something was not removed from PG
+        let extraItem = potentialExtraItems.rows[k].item;
+        const { result } = await this.handleUnexpectedItemState({
+          collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+          dateMS: Date.now(),
+          idOrKey: extraItem.id,
+          msg: '',
+          pgMirrorIndex: i
+        });
+        if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
+          p.currentResult.totalErrors += 1;
+          p.validationErrorLogger({
+            collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+            errorType: result,
+            item: {},
+            mirroredItem: extraItem,
+            poolTitle: pp.title,
+            description: `Some items found in PG when we were expecting them to be gone while running collectionorRecordPathMirrorValidation`
+          });
+        }
+      }
     }
   }
 
@@ -739,6 +832,7 @@ export class FirebaseLiftPostgresSyncTool {
         }
 
         await this.collectionorRecordPathMirrorValidation({
+          currentResult: result,
           batchSize: p.batchSize,
           collectionOrRecordPathMeta: meta,
           validationErrorLogger: p.validationErrorLogger

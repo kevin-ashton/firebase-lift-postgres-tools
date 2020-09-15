@@ -12,8 +12,10 @@ import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
 import * as stable from 'json-stable-stringify';
 
-describe('Full mirror validations', () => {
-  test('foo', async () => {
-    console.log('Hello');
+export function fullMirrorValidations() {
+  describe('Full mirror validations', () => {
+    test('foo', async () => {
+      console.log('Hello');
+    });
   });
-});
+}
