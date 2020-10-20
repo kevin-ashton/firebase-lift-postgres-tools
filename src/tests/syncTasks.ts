@@ -2,7 +2,7 @@ import {
   getFirebaseLiftPostgresSyncTool,
   getPool1,
   generateMockFirebaseChangeObject,
-  collectionOrRecordPathMeta,
+  collectionOrRecordPathsMeta,
   reset,
   getPool2,
   exampleTransformFn
@@ -18,17 +18,17 @@ export function syncTasksTests() {
     test('Ensure mirror tables are created on startup', async () => {
       console.log('Attempt to drop table');
       try {
-        await getPool1().query(`drop table mirror_${collectionOrRecordPathMeta[0].collectionOrRecordPath}`);
+        await getPool1().query(`drop table mirror_${collectionOrRecordPathsMeta[0].collectionOrRecordPath}`);
       } catch (e) {}
 
       await assert.rejects(
-        getPool1().query(`select count(*) from mirror_${collectionOrRecordPathMeta[0].collectionOrRecordPath}`)
+        getPool1().query(`select count(*) from mirror_${collectionOrRecordPathsMeta[0].collectionOrRecordPath}`)
       );
       getFirebaseLiftPostgresSyncTool();
       // Hacky but give it a moment to create the tables
       await new Promise((r) => setTimeout(() => r(), 1000));
       let r = await getPool1().query(
-        `select count(*) from mirror_${collectionOrRecordPathMeta[0].collectionOrRecordPath}`
+        `select count(*) from mirror_${collectionOrRecordPathsMeta[0].collectionOrRecordPath}`
       );
       assert.deepStrictEqual(r.rows.length, 1);
     });

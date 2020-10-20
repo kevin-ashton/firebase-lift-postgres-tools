@@ -3,7 +3,7 @@ import {
   reset,
   getFirebaseLiftPostgresSyncTool,
   getFirebaseApp,
-  collectionOrRecordPathMeta,
+  collectionOrRecordPathsMeta,
   generateMockFirebaseChangeObject,
   getPool1,
   getPool2,
@@ -21,7 +21,7 @@ const item1 = {
 
 const item1_transformed = exampleTransformFn({ collectionOrRecordPath: 'device', item: item1 });
 
-const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
+const rtdbRecordPath = collectionOrRecordPathsMeta[1].collectionOrRecordPath;
 
 export async function rtdbBasicTests() {
   const rtdb = getFirebaseApp().database().ref(rtdbRecordPath);

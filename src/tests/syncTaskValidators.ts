@@ -3,7 +3,7 @@ import {
   reset,
   getFirebaseLiftPostgresSyncTool,
   getFirebaseApp,
-  collectionOrRecordPathMeta,
+  collectionOrRecordPathsMeta,
   generateMockFirebaseChangeObject,
   getPool1,
   exampleTransformFn
@@ -20,8 +20,8 @@ const item1 = {
 
 const item1_transformed = exampleTransformFn({ collectionOrRecordPath: 'person', item: item1 });
 
-const collection = collectionOrRecordPathMeta[0].collectionOrRecordPath;
-const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
+const collection = collectionOrRecordPathsMeta[0].collectionOrRecordPath;
+const rtdbRecordPath = collectionOrRecordPathsMeta[1].collectionOrRecordPath;
 
 export function syncTaskValidatorsTests() {
   describe('FirebaseLiftPostgresSyncTool Sync Validator Tasks Basics', () => {
