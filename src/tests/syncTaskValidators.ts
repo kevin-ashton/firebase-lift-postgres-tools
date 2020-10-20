@@ -6,7 +6,7 @@ import {
   collectionOrRecordPathMeta,
   generateMockFirebaseChangeObject,
   getPool1,
-  exampleObfuscateFn
+  exampleTransformFn
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
@@ -18,7 +18,7 @@ const item1 = {
   bar: 'bar ' + Math.random()
 };
 
-const item1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: item1 });
+const item1_transformed = exampleTransformFn({ collectionOrRecordPath: 'person', item: item1 });
 
 const collection = collectionOrRecordPathMeta[0].collectionOrRecordPath;
 const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
@@ -60,7 +60,7 @@ export function syncTaskValidatorsTests() {
       const originalErrors = tool.getStats().totalErrors;
 
       await firestoreCollection.doc(item1.id).set(item1);
-      const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+      const { syncTask } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
@@ -130,7 +130,7 @@ export function syncTaskValidatorsTests() {
       assert.deepStrictEqual(startingErrors + 1, getFirebaseLiftPostgresSyncTool().getStats().totalErrors);
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_transformed));
     });
 
     test('Multiple validators, different times, run out of order', async () => {
@@ -214,7 +214,7 @@ export function syncTaskValidatorsTests() {
       const originalErrors = tool.getStats().totalErrors;
 
       await firestoreCollection.doc(item1.id).set(item1);
-      const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+      const { syncTask } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
@@ -229,12 +229,9 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
 
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
-      const item1Update1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'person', item: item1Update1 });
+      const item1Update1_transformed = exampleTransformFn({ collectionOrRecordPath: 'person', item: item1Update1 });
       await firestoreCollection.doc(item1.id).set(item1Update1);
-      const {
-        syncTask: syncTask2,
-        syncTaskValidator: syncTaskValidator2
-      } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+      const { syncTaskValidator: syncTaskValidator2 } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
@@ -255,10 +252,10 @@ export function syncTaskValidatorsTests() {
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1Update1_Obfus));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1Update1_transformed));
 
       let r2 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1Update1_Obfus));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1Update1_transformed));
     });
 
     test('Delete syncTask failed to run', async () => {
@@ -283,10 +280,7 @@ export function syncTaskValidatorsTests() {
       await tool._waitUntilSyncQueueDrained();
 
       await firestoreCollection.doc(item1.id).delete();
-      const {
-        syncTask: syncTask2,
-        syncTaskValidator: syncTaskValidator2
-      } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+      const { syncTaskValidator: syncTaskValidator2 } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
@@ -339,7 +333,7 @@ export function syncTaskValidatorsTests() {
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_transformed));
     });
 
     test('Race Condition: same item, correct order, multiple validators', async () => {

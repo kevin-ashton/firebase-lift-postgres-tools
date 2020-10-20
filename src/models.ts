@@ -1,6 +1,8 @@
+export type Action = 'create' | 'update' | 'delete';
+
 export interface SyncTask {
   idOrKey: string;
-  action: 'create' | 'update' | 'delete';
+  action: Action;
   collectionOrRecordPath: string;
   beforeItem: any;
   afterItem: any;
@@ -9,7 +11,7 @@ export interface SyncTask {
 
 export interface SyncTaskValidator {
   idOrKey: string;
-  action: 'create' | 'update' | 'delete';
+  action: Action;
   collectionOrRecordPath: string;
   afterItem: any;
   dateMS: number;

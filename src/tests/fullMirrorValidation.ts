@@ -3,7 +3,7 @@ import {
   reset,
   getFirebaseLiftPostgresSyncTool,
   getFirebaseApp,
-  collectionOrRecordPathMeta,
+  collectionOrRecordPathsMeta,
   generateMockFirebaseChangeObject,
   getPool1,
   getPool2

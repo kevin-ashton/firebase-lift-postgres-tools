@@ -1,6 +1,8 @@
 import * as admin from 'firebase-admin';
 import { queue } from 'async';
 
+// Function to process every document in a firestore collection
+// Keep in mind that documents while this is running may not be included.
 export async function fetchAndProcessFirestoreCollection(p: {
   firestoreFetchBatchSize: number;
   firestore: admin.firestore.Firestore;
@@ -47,6 +49,8 @@ export async function fetchAndProcessFirestoreCollection(p: {
   }
 }
 
+// Function to process every document in a realtime database node
+// Keep in mind that nodes while this is running may not be included.
 export async function fetchAndProcessRtdbRecordPath(p: {
   rtdbBatchSize: number;
   rtdb: admin.database.Database;

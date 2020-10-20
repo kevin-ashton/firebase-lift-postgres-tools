@@ -7,7 +7,7 @@ import {
   generateMockFirebaseChangeObject,
   getPool1,
   getPool2,
-  exampleObfuscateFn
+  exampleTransformFn
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
@@ -19,7 +19,7 @@ const item1 = {
   bar: 'bar ' + Math.random()
 };
 
-const item1_Obfus = exampleObfuscateFn({ collectionOrRecordPath: 'device', item: item1 });
+const item1_transformed = exampleTransformFn({ collectionOrRecordPath: 'device', item: item1 });
 
 const rtdbRecordPath = collectionOrRecordPathMeta[1].collectionOrRecordPath;
 
@@ -53,9 +53,9 @@ export async function rtdbBasicTests() {
       assert.deepStrictEqual(tool.getStats().totalErrors, orignalStats.totalErrors);
 
       let r1 = await getPool1().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_transformed));
       let r2 = await getPool2().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_transformed));
     });
 
     test('Ensure has the ability to sync from rtdb', async () => {
@@ -92,9 +92,9 @@ export async function rtdbBasicTests() {
 
       // Make sure it has healed
       let r1 = await getPool1().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_transformed));
       let r2 = await getPool2().query('select * from mirror_device where id = $1', [item1.id]);
-      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_Obfus));
+      assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_transformed));
     });
   });
 }

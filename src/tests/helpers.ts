@@ -2,13 +2,13 @@ import { clearFirestoreData } from '@firebase/testing';
 import {
   FirebaseLiftPostgresSyncTool,
   CollectionOrRecordPathMeta,
-  PreMirrorObfuscationFn
+  PreMirrorTransformFn
 } from '../FirebaseLiftPostgresSyncTool';
 import * as fbAdmin from 'firebase-admin';
 import * as pg from 'pg';
 
 const testFirebaseConfig = { projectId: 'fir-lift', databaseURL: 'http://localhost:9000/?ns=fir-lift' };
-export const collectionOrRecordPathMeta: CollectionOrRecordPathMeta[] = [
+export const collectionOrRecordPathsMeta: CollectionOrRecordPathMeta[] = [
   { collectionOrRecordPath: 'person', source: 'firestore' },
   { collectionOrRecordPath: 'device', source: 'rtdb' }
 ];
@@ -49,7 +49,7 @@ export async function reset() {
   await clearFirestoreData({ projectId: testFirebaseConfig.projectId });
   getFirebaseApp().database().ref('/').remove();
 
-  const baseExampleTableNames = collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
+  const baseExampleTableNames = collectionOrRecordPathsMeta.map((e) => e.collectionOrRecordPath);
   for (let i = 0; i < baseExampleTableNames.length; i++) {
     try {
       await getPool1().query(`truncate table mirror_${baseExampleTableNames[i]}`);
@@ -68,7 +68,7 @@ export async function reset() {
 
 let tool: FirebaseLiftPostgresSyncTool;
 
-export const exampleObfuscateFn: PreMirrorObfuscationFn = (p) => {
+export const exampleTransformFn: PreMirrorTransformFn = (p) => {
   return { ...p.item, ...{ obfus: `${p.collectionOrRecordPath} - obfus` } };
 };
 
@@ -79,12 +79,12 @@ export function getFirebaseLiftPostgresSyncTool() {
     tool = new FirebaseLiftPostgresSyncTool({
       mirrorsPgs: [db1, db2],
       auditPgs: [db2],
-      collectionOrRecordPathMeta,
+      collectionOrRecordPathsMeta: collectionOrRecordPathsMeta,
       errorHandler: (e) => {
         console.log('Error Handler triggered');
         console.log(e);
       },
-      preMirrorObfuscation: exampleObfuscateFn,
+      preMirrorTransform: exampleTransformFn,
       firestore: app.firestore(),
       rtdb: app.database(),
       syncQueueConcurrency: 10,

@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { SyncTask, SyncTaskValidator } from './models';
+import { SyncTask, SyncTaskValidator, Action } from './models';
 import * as fbAdmin from 'firebase-admin';
 import * as Queue from 'promise-queue';
 import * as stable from 'json-stable-stringify';
@@ -11,7 +11,7 @@ type DebuggerFn = (p: { task: any }) => Promise<void>;
 interface FullMirrorValidationResultError {
   status: 'failed';
   errorMsg: string;
-  currentFullMirrorValidationRunResult: FullMirrorValidationRunResult;
+  finalFullMirrorValidationRunResult: FullMirrorValidationRunResult;
 }
 
 interface FullMirrorValidationRunResult {
@@ -35,7 +35,9 @@ type UnexpectedResultStatus =
   | 'ITEM_WAS_MISSING_IN_MIRROR'
   | 'ITEM_WAS_NOT_DELETED_IN_MIRROR';
 
-export type PreMirrorObfuscationFn = (p: { item: any; collectionOrRecordPath: string }) => any;
+export type PreMirrorTransformFn = (p: { item: any; collectionOrRecordPath: string }) => any;
+
+export type PostMirrorHookFn = (p: { action: Action; item: any; collectionOrRecordPath: string }) => Promise<void>;
 
 type ValidationErrorLogger = (pp: {
   poolTitle: string;
@@ -57,7 +59,7 @@ export class FirebaseLiftPostgresSyncTool {
 
   private rtdb: fbAdmin.database.Database = null as any;
   private firestore: fbAdmin.firestore.Firestore = null as any;
-  private collectionOrRecordPathMeta: CollectionOrRecordPathMeta[] = [];
+  private collectionOrRecordPathsMeta: CollectionOrRecordPathMeta[] = [];
 
   private syncQueue: Queue = null as any;
   private syncValidatorQueue: Queue = null as any;
@@ -76,31 +78,41 @@ export class FirebaseLiftPostgresSyncTool {
   private totalSyncValidatorTasksPendingRetry = 0;
   private totalSyncValidatorsTasksSkipped = 0;
 
-  private preMirrorObfuscation: PreMirrorObfuscationFn = (i) => i.item; // Usesd to transform the item before sending it to the pgMirror
+  private preMirrorTransform: PreMirrorTransformFn = (i) => i.item; // Usesd to transform the item before sending it to the pgMirror
 
   constructor(config: {
     mirrorsPgs: { title: string; pool: Pool }[];
     auditPgs: { title: string; pool: Pool }[];
-    collectionOrRecordPathMeta: CollectionOrRecordPathMeta[];
+    collectionOrRecordPathsMeta: CollectionOrRecordPathMeta[];
     rtdb: fbAdmin.database.Database;
     firestore: fbAdmin.firestore.Firestore;
     syncQueueConcurrency: number;
     syncValidatorQueueConcurrency: number;
     errorHandler: (p: { message: string; error?: any }) => void;
-    preMirrorObfuscation?: PreMirrorObfuscationFn;
+    preMirrorTransform?: PreMirrorTransformFn;
   }) {
     console.log('Init FirebaseLiftPostgresSyncTool');
+
+    // Make sure we have valid collectionOrRecordPaths
+    // Only supports realtime database nodes at the root for the time being as result
+    for (let i = 0; i < config.collectionOrRecordPathsMeta.length; i++) {
+      const t = config.collectionOrRecordPathsMeta[i].collectionOrRecordPath;
+      if (t !== t.replace(/[^A-Za-z]/gim, ' ')) {
+        throw new Error(`Invalid collectionOrRecordPath. Only letters are allowed`);
+      }
+    }
+
     this.mirrorPgs = config.mirrorsPgs;
     this.auditPgs = config.auditPgs;
     this.syncQueue = new Queue(config.syncQueueConcurrency, Infinity);
     this.syncValidatorQueue = new Queue(config.syncValidatorQueueConcurrency, Infinity);
-    this.collectionOrRecordPathMeta = config.collectionOrRecordPathMeta;
+    this.collectionOrRecordPathsMeta = config.collectionOrRecordPathsMeta;
     this.rtdb = config.rtdb;
     this.firestore = config.firestore;
     this._externalErrorHandler = config.errorHandler;
 
-    if (config.preMirrorObfuscation) {
-      this.preMirrorObfuscation = config.preMirrorObfuscation;
+    if (config.preMirrorTransform) {
+      this.preMirrorTransform = config.preMirrorTransform;
     }
 
     this.ensureMirrorTablesExists();
@@ -125,7 +137,7 @@ export class FirebaseLiftPostgresSyncTool {
     if (this.mirrorPgs.length > 0) {
       for (let i = 0; i < this.mirrorPgs.length; i++) {
         const pg = this.mirrorPgs[i];
-        const baseTableNames = this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
+        const baseTableNames = this.collectionOrRecordPathsMeta.map((e) => e.collectionOrRecordPath);
         for (let k = 0; k < baseTableNames.length; k++) {
           const baseTableName = baseTableNames[k];
           try {
@@ -163,7 +175,7 @@ export class FirebaseLiftPostgresSyncTool {
     if (this.auditPgs.length > 0) {
       for (let i = 0; i < this.auditPgs.length; i++) {
         const pg = this.auditPgs[i];
-        const baseTableNames = this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath);
+        const baseTableNames = this.collectionOrRecordPathsMeta.map((e) => e.collectionOrRecordPath);
         for (let k = 0; k < baseTableNames.length; k++) {
           const baseTableName = baseTableNames[k];
           try {
@@ -220,9 +232,11 @@ export class FirebaseLiftPostgresSyncTool {
 
   queueSyncTasks(tasks: SyncTask[]) {
     tasks.forEach((task) => {
-      if (!this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath).includes(task.collectionOrRecordPath)) {
+      if (
+        !this.collectionOrRecordPathsMeta.map((e) => e.collectionOrRecordPath).includes(task.collectionOrRecordPath)
+      ) {
         this.errorHandler({
-          message: `Cannot sync item. The collectionOrRecordPath is not whitelisted.`,
+          message: `Cannot sync item. The collectionOrRecordPath is not registered.`,
           meta: {
             collectionOrRecordPath: task.collectionOrRecordPath
           }
@@ -269,6 +283,7 @@ export class FirebaseLiftPostgresSyncTool {
 
   private handleSyncTasks(task: SyncTask) {
     return async () => {
+      // Check if another task is already being executed for this key
       if (this.syncTaskRunningIdOrKeys[task.idOrKey]) {
         if (this.syncTaskRunningIdOrKeys[task.idOrKey] > task.dateMS) {
           // if the pending task is older than the one being executed we discard it
@@ -313,7 +328,7 @@ export class FirebaseLiftPostgresSyncTool {
                   return;
                 }
                 let item = task.afterItem;
-                item = this.preMirrorObfuscation({
+                item = this.preMirrorTransform({
                   collectionOrRecordPath: task.collectionOrRecordPath,
                   item: { ...item }
                 });
@@ -323,7 +338,7 @@ export class FirebaseLiftPostgresSyncTool {
                 );
               } else if (task.action === 'update') {
                 let item = task.afterItem;
-                item = this.preMirrorObfuscation({
+                item = this.preMirrorTransform({
                   collectionOrRecordPath: task.collectionOrRecordPath,
                   item: { ...item }
                 });
@@ -354,13 +369,13 @@ export class FirebaseLiftPostgresSyncTool {
                 [
                   task.idOrKey,
                   task.beforeItem
-                    ? this.preMirrorObfuscation({
+                    ? this.preMirrorTransform({
                         collectionOrRecordPath: task.collectionOrRecordPath,
                         item: task.beforeItem
                       })
                     : {},
                   task.afterItem
-                    ? this.preMirrorObfuscation({
+                    ? this.preMirrorTransform({
                         collectionOrRecordPath: task.collectionOrRecordPath,
                         item: task.afterItem
                       })
@@ -399,9 +414,11 @@ export class FirebaseLiftPostgresSyncTool {
 
   public queueSyncTaskValidator(tasks: SyncTaskValidator[]) {
     tasks.forEach((task) => {
-      if (!this.collectionOrRecordPathMeta.map((e) => e.collectionOrRecordPath).includes(task.collectionOrRecordPath)) {
+      if (
+        !this.collectionOrRecordPathsMeta.map((e) => e.collectionOrRecordPath).includes(task.collectionOrRecordPath)
+      ) {
         this.errorHandler({
-          message: `Cannot sync item. The collectionOrRecordPath is not whitelisted.`,
+          message: `Cannot sync item. The collectionOrRecordPath is not registered.`,
           meta: {
             collectionOrRecordPath: task.collectionOrRecordPath
           }
@@ -504,7 +521,7 @@ export class FirebaseLiftPostgresSyncTool {
 
   private async fetchItemFromFirebase(p: { idOrKey: string; collectionOrRecordPath: string }): Promise<Object | null> {
     // Figure out if firestore or rtdb
-    let meta = this.collectionOrRecordPathMeta.find((t) => t.collectionOrRecordPath === p.collectionOrRecordPath);
+    let meta = this.collectionOrRecordPathsMeta.find((t) => t.collectionOrRecordPath === p.collectionOrRecordPath);
     if (!meta) {
       this.errorHandler({
         message: `Unable to find meta for a collectionOrRecordPath. collectionOrRecordPath: ${p.collectionOrRecordPath}. Cannot fetchItemFromFirebase.`
@@ -516,13 +533,13 @@ export class FirebaseLiftPostgresSyncTool {
       const r = await this.firestore.collection(p.collectionOrRecordPath).doc(p.idOrKey).get();
       const data = r.data();
       if (data) {
-        return this.preMirrorObfuscation({ collectionOrRecordPath: p.collectionOrRecordPath, item: { ...data } });
+        return this.preMirrorTransform({ collectionOrRecordPath: p.collectionOrRecordPath, item: { ...data } });
       }
     } else if (meta.source === 'rtdb') {
       const r = await this.rtdb.ref(`${p.collectionOrRecordPath}/${p.idOrKey}`).once('value');
       const data = r.val();
       if (data) {
-        return this.preMirrorObfuscation({ collectionOrRecordPath: p.collectionOrRecordPath, item: { ...data } });
+        return this.preMirrorTransform({ collectionOrRecordPath: p.collectionOrRecordPath, item: { ...data } });
       }
     } else {
       this.errorHandler({ message: `Unknown meta source in fetchItemFromFirebase` });
@@ -599,7 +616,7 @@ export class FirebaseLiftPostgresSyncTool {
                   if (
                     stable(r1.rows[0].item) !==
                     stable(
-                      this.preMirrorObfuscation({
+                      this.preMirrorTransform({
                         item: task.afterItem,
                         collectionOrRecordPath: task.collectionOrRecordPath
                       })
@@ -686,11 +703,11 @@ export class FirebaseLiftPostgresSyncTool {
             }
           } else {
             const dbItem = r1.rows[0].item;
-            const item_obfus = this.preMirrorObfuscation({
+            const item_transformed = this.preMirrorTransform({
               collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
               item: { ...item }
             });
-            if (stable(dbItem) !== stable(item_obfus)) {
+            if (stable(dbItem) !== stable(item_transformed)) {
               // Might have an issue where pg and firebase don't match
               const { result } = await this.handleUnexpectedItemState({
                 collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
@@ -726,6 +743,7 @@ export class FirebaseLiftPostgresSyncTool {
       }
     };
 
+    // Pull down and validate all the items in a firestore collection or a realtime database node
     if (p.collectionOrRecordPathMeta.source === 'firestore') {
       await fetchAndProcessFirestoreCollection({
         firestore: this.firestore,
@@ -746,6 +764,7 @@ export class FirebaseLiftPostgresSyncTool {
       throw new Error('Unknown meta source for fullMirrorValidation');
     }
 
+    // Query the mirror tables and look for rows and look for extra items
     for (let i = 0; i < this.mirrorPgs.length; i++) {
       let pp = this.mirrorPgs[i];
       let potentialExtraItems = await pp.pool.query(`select * from ${table} where validation_number = $1`, [
@@ -790,7 +809,6 @@ export class FirebaseLiftPostgresSyncTool {
     }) => void;
     validationErrorLogger: ValidationErrorLogger;
   }): Promise<FullMirrorValidationResult> {
-    let x = this.collectionOrRecordPathMeta;
     let result: FullMirrorValidationRunResult = {
       initialRowCounts: {},
       status: 'finished',
@@ -822,7 +840,7 @@ export class FirebaseLiftPostgresSyncTool {
 
         for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
           const c = p.collectionsOrRecordPaths[i];
-          const v = this.collectionOrRecordPathMeta.find((e) => e.collectionOrRecordPath === c);
+          const v = this.collectionOrRecordPathsMeta.find((e) => e.collectionOrRecordPath === c);
           if (!v) {
             throw new Error(`Unable to run fullMirrorValidation. ${c} is not a valid collectionOrRecordPath`);
           }
@@ -844,7 +862,7 @@ export class FirebaseLiftPostgresSyncTool {
       // Run the validations for each collectionsOrRecordPath
       for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
         const c = p.collectionsOrRecordPaths[i];
-        const meta = this.collectionOrRecordPathMeta.find((t) => t.collectionOrRecordPath === c);
+        const meta = this.collectionOrRecordPathsMeta.find((t) => t.collectionOrRecordPath === c);
         if (!meta) {
           throw new Error(`Cannot run fullMirrorValidation for ${c} with meta.`);
         }
@@ -857,7 +875,7 @@ export class FirebaseLiftPostgresSyncTool {
         });
       }
     } catch (e) {
-      return { status: 'failed', errorMsg: e.message, currentFullMirrorValidationRunResult: result };
+      return { status: 'failed', errorMsg: e.message, finalFullMirrorValidationRunResult: result };
     } finally {
       clearInterval(progressLoggerInterval);
     }
@@ -872,7 +890,6 @@ export class FirebaseLiftPostgresSyncTool {
     type: 'firestore' | 'rtdb';
     collectionOrRecordPath: string;
     firestoreTriggerWriteChangeObject: any;
-    dataScrubber?: (node: any) => Object;
   }): { syncTask: SyncTask; syncTaskValidator: SyncTaskValidator } {
     const change = p.firestoreTriggerWriteChangeObject;
 
@@ -890,14 +907,6 @@ export class FirebaseLiftPostgresSyncTool {
 
     let beforeItem = p.type === 'firestore' ? change.before.data() : change.before.val();
     let afterItem = p.type === 'firestore' ? change.after.data() : change.after.val();
-    if (p.dataScrubber) {
-      if (beforeItem) {
-        beforeItem = p.dataScrubber(beforeItem);
-      }
-      if (afterItem) {
-        afterItem = p.dataScrubber(afterItem);
-      }
-    }
 
     let idOrKey = '';
     if (p.type === 'firestore') {
