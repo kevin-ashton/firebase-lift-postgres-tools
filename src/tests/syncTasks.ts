@@ -5,7 +5,8 @@ import {
   collectionOrRecordPathsMeta,
   reset,
   getPool2,
-  exampleTransformFn
+  exampleTransformFn,
+  getPostMirrorHasRunNTimes
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import { describe, run, test, otest, setOptions } from 'nano-test-runner';
@@ -78,12 +79,16 @@ export function syncTasksTests() {
         dbType: 'firestore'
       })
     }).syncTask;
+
+    let m1 = 0;
     run(async () => {
+      await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
+      m1 = getPostMirrorHasRunNTimes();
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([updateTask]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
     });
 
-    test('Update item into mirror/audit tables', async () => {
+    test('Update item into mirror/audit tables and basic check for posthook', async () => {
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem_transformed));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
@@ -94,6 +99,8 @@ export function syncTasksTests() {
       );
       assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(item1_transformed));
       assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem_transformed));
+
+      assert.deepStrictEqual(m1 + 1, getPostMirrorHasRunNTimes());
     });
 
     let deleteTask = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({

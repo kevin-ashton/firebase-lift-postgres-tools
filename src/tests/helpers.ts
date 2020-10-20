@@ -2,7 +2,8 @@ import { clearFirestoreData } from '@firebase/testing';
 import {
   FirebaseLiftPostgresSyncTool,
   CollectionOrRecordPathMeta,
-  PreMirrorTransformFn
+  PreMirrorTransformFn,
+  PostMirrorHookFn
 } from '../FirebaseLiftPostgresSyncTool';
 import * as fbAdmin from 'firebase-admin';
 import * as pg from 'pg';
@@ -72,6 +73,14 @@ export const exampleTransformFn: PreMirrorTransformFn = (p) => {
   return { ...p.item, ...{ obfus: `${p.collectionOrRecordPath} - obfus` } };
 };
 
+let postMirrorHasRunNTimes = 0;
+export function getPostMirrorHasRunNTimes() {
+  return postMirrorHasRunNTimes;
+}
+const examplePostMirrorFn: PostMirrorHookFn = async (p) => {
+  postMirrorHasRunNTimes += 1;
+};
+
 export function getFirebaseLiftPostgresSyncTool() {
   if (!tool) {
     const db1 = { title: 'main_db', pool: getPool1() };
@@ -85,6 +94,7 @@ export function getFirebaseLiftPostgresSyncTool() {
         console.log(e);
       },
       preMirrorTransform: exampleTransformFn,
+      postMirrorHook: examplePostMirrorFn,
       firestore: app.firestore(),
       rtdb: app.database(),
       syncQueueConcurrency: 10,

@@ -11,6 +11,7 @@ Setup 2 postgres databases on your local machine. See the test config for databa
 ```
   yarn install
   yarn start
+  yarn ts-watch
   yarn test
 ```
 

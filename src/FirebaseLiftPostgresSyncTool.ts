@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { SyncTask, SyncTaskValidator, Action } from './models';
+import { SyncTask, SyncTaskValidator } from './models';
 import * as fbAdmin from 'firebase-admin';
 import * as Queue from 'promise-queue';
 import * as stable from 'json-stable-stringify';
@@ -37,7 +37,11 @@ type UnexpectedResultStatus =
 
 export type PreMirrorTransformFn = (p: { item: any; collectionOrRecordPath: string }) => any;
 
-export type PostMirrorHookFn = (p: { action: Action; item: any; collectionOrRecordPath: string }) => Promise<void>;
+export type PostMirrorHookFn = (p: {
+  action: 'create/update' | 'delete';
+  item: any;
+  collectionOrRecordPath: string;
+}) => Promise<void>;
 
 type ValidationErrorLogger = (pp: {
   poolTitle: string;
@@ -79,6 +83,7 @@ export class FirebaseLiftPostgresSyncTool {
   private totalSyncValidatorsTasksSkipped = 0;
 
   private preMirrorTransform: PreMirrorTransformFn = (i) => i.item; // Usesd to transform the item before sending it to the pgMirror
+  private postMirrorHook: PostMirrorHookFn = async () => {};
 
   constructor(config: {
     mirrorsPgs: { title: string; pool: Pool }[];
@@ -90,6 +95,7 @@ export class FirebaseLiftPostgresSyncTool {
     syncValidatorQueueConcurrency: number;
     errorHandler: (p: { message: string; error?: any }) => void;
     preMirrorTransform?: PreMirrorTransformFn;
+    postMirrorHook?: PostMirrorHookFn;
   }) {
     console.log('Init FirebaseLiftPostgresSyncTool');
 
@@ -113,6 +119,10 @@ export class FirebaseLiftPostgresSyncTool {
 
     if (config.preMirrorTransform) {
       this.preMirrorTransform = config.preMirrorTransform;
+    }
+
+    if (config.postMirrorHook) {
+      this.postMirrorHook = config.postMirrorHook;
     }
 
     this.ensureMirrorTablesExists();
@@ -396,6 +406,12 @@ export class FirebaseLiftPostgresSyncTool {
             }
           })
         ]);
+
+        await this.postMirrorHook({
+          action: task.action === 'delete' ? 'delete' : 'create/update',
+          collectionOrRecordPath: task.collectionOrRecordPath,
+          item: task.afterItem
+        });
       } catch (e) {
         this.errorHandler({
           message: `Trouble running handleSyncTasks.`,
@@ -571,6 +587,8 @@ export class FirebaseLiftPostgresSyncTool {
         await this.syncValidatorTaskDebuggerFn({ task });
       }
 
+      const unexpectedStateResults: UnexpectedResultStatus[] = [];
+
       try {
         await Promise.all(
           this.mirrorPgs.map(async (pg, index) => {
@@ -584,13 +602,14 @@ export class FirebaseLiftPostgresSyncTool {
               if (task.action === 'create' || task.action === 'update') {
                 if (r1.rows.length !== 1) {
                   // Since unexpected length we sync it just in case
-                  await this.handleUnexpectedItemState({
+                  const he = await this.handleUnexpectedItemState({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
                     msg: 'handleSyncTaskValidator create/update has an unexpected length',
                     pgMirrorIndex: index
                   });
+                  unexpectedStateResults.push(he.result);
                   return;
                 }
 
@@ -601,7 +620,7 @@ export class FirebaseLiftPostgresSyncTool {
                 }
 
                 if (lastSyncTaskDateMs < task.dateMS) {
-                  await this.handleUnexpectedItemState({
+                  const he = await this.handleUnexpectedItemState({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
@@ -609,6 +628,7 @@ export class FirebaseLiftPostgresSyncTool {
                       'handleSyncTaskValidator create/update the last_sync_task_date_ms is less than task.dateMS suggesting the syncTask was never run',
                     pgMirrorIndex: index
                   });
+                  unexpectedStateResults.push(he.result);
                   return;
                 }
 
@@ -622,7 +642,7 @@ export class FirebaseLiftPostgresSyncTool {
                       })
                     )
                   ) {
-                    await this.handleUnexpectedItemState({
+                    const he = await this.handleUnexpectedItemState({
                       collectionOrRecordPath: task.collectionOrRecordPath,
                       idOrKey: task.idOrKey,
                       dateMS: task.dateMS,
@@ -630,18 +650,20 @@ export class FirebaseLiftPostgresSyncTool {
                         'handleSyncTaskValidator create/update the last_sync_task_date_ms matches but the items do not match',
                       pgMirrorIndex: index
                     });
+                    unexpectedStateResults.push(he.result);
                     return;
                   }
                 }
               } else if (task.action === 'delete') {
                 if (r1.rows.length > 0) {
-                  await this.handleUnexpectedItemState({
+                  const he = await this.handleUnexpectedItemState({
                     collectionOrRecordPath: task.collectionOrRecordPath,
                     idOrKey: task.idOrKey,
                     dateMS: task.dateMS,
                     msg: 'handleSyncTaskValidator delete a row shows up but it should have been deleted',
                     pgMirrorIndex: index
                   });
+                  unexpectedStateResults.push(he.result);
                   return;
                 }
               } else {
@@ -655,6 +677,15 @@ export class FirebaseLiftPostgresSyncTool {
             }
           })
         );
+
+        if (unexpectedStateResults.filter((r) => r !== 'ITEMS_WERE_IN_EXPECTED_STATE').length) {
+          // Since we had at least one unexpected result we run the posthook again
+          await this.postMirrorHook({
+            action: task.action === 'delete' ? 'delete' : 'create/update',
+            collectionOrRecordPath: task.collectionOrRecordPath,
+            item: task.afterItem
+          });
+        }
       } catch (e) {
         this.errorHandler({
           message: 'Trouble running handleSyncTaskValidator',
@@ -676,6 +707,7 @@ export class FirebaseLiftPostgresSyncTool {
     const table = `mirror_${p.collectionOrRecordPathMeta.collectionOrRecordPath}`;
     const validateItem = async (item: any) => {
       try {
+        const unexpectedStateResults: UnexpectedResultStatus[] = [];
         for (let i = 0; i < this.mirrorPgs.length; i++) {
           const pp = this.mirrorPgs[i];
 
@@ -689,6 +721,7 @@ export class FirebaseLiftPostgresSyncTool {
               msg: '',
               pgMirrorIndex: i
             });
+            unexpectedStateResults.push(result);
             p.currentResult.validationResults[result] += 1;
             if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
               p.currentResult.totalErrors += 1;
@@ -716,6 +749,7 @@ export class FirebaseLiftPostgresSyncTool {
                 msg: '',
                 pgMirrorIndex: i
               });
+              unexpectedStateResults.push(result);
               p.currentResult.validationResults[result] += 1;
 
               if (result !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
@@ -735,6 +769,15 @@ export class FirebaseLiftPostgresSyncTool {
           }
           await pp.pool.query(`update ${table} set validation_number = 0 where id = $1`, [item.id]);
           p.currentResult.totalRowsProcessed += 1;
+        }
+
+        if (unexpectedStateResults.filter((r) => r !== 'ITEMS_WERE_IN_EXPECTED_STATE').length) {
+          // Since we had at least one unexpected result we run the posthook again
+          await this.postMirrorHook({
+            action: 'create/update',
+            collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+            item
+          });
         }
       } catch (e) {
         p.currentResult.totalErrors += 1;
@@ -791,6 +834,11 @@ export class FirebaseLiftPostgresSyncTool {
             mirroredItem: extraItem,
             poolTitle: pp.title,
             description: `Some items found in PG when we were expecting them to be gone while running collectionorRecordPathMirrorValidation`
+          });
+          await this.postMirrorHook({
+            action: 'delete',
+            collectionOrRecordPath: p.collectionOrRecordPathMeta.collectionOrRecordPath,
+            item: {}
           });
         } else {
           p.currentResult.validationResults['ITEMS_WERE_IN_EXPECTED_STATE'] += 1;
