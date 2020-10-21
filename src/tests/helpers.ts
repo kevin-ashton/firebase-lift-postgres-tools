@@ -73,12 +73,13 @@ export const exampleTransformFn: PreMirrorTransformFn = (p) => {
   return { ...p.item, ...{ obfus: `${p.collectionOrRecordPath} - obfus` } };
 };
 
-let postMirrorHasRunNTimes = 0;
-export function getPostMirrorHasRunNTimes() {
-  return postMirrorHasRunNTimes;
+let postMirrorHasRunNTimes = { 'create/update': 0, delete: 0, total: 0 };
+export function getPostMirrorHasRunNTimes(): typeof postMirrorHasRunNTimes {
+  return JSON.parse(JSON.stringify(postMirrorHasRunNTimes));
 }
 const examplePostMirrorFn: PostMirrorHookFn = async (p) => {
-  postMirrorHasRunNTimes += 1;
+  postMirrorHasRunNTimes[p.action] += 1;
+  postMirrorHasRunNTimes.total += 1;
 };
 
 export function getFirebaseLiftPostgresSyncTool() {

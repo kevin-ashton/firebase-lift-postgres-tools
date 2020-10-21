@@ -319,6 +319,7 @@ export class FirebaseLiftPostgresSyncTool {
       try {
         const table = `mirror_${task.collectionOrRecordPath}`;
         const auditTable = `audit_${task.collectionOrRecordPath}`;
+        let shouldRunPostHook = false;
         await Promise.all([
           ...this.mirrorPgs.map(async (pg) => {
             try {
@@ -346,6 +347,7 @@ export class FirebaseLiftPostgresSyncTool {
                   `insert into ${table} (id, item, updated_at, last_sync_task_date_ms) values ($1, $2, now(), $3)`,
                   [task.idOrKey, item, task.dateMS]
                 );
+                shouldRunPostHook = true;
               } else if (task.action === 'update') {
                 let item = task.afterItem;
                 item = this.preMirrorTransform({
@@ -361,8 +363,10 @@ export class FirebaseLiftPostgresSyncTool {
                   `update ${table} set item = $1, updated_at = now(), last_sync_task_date_ms = $2 where id = $3`,
                   [item, task.dateMS, task.idOrKey]
                 );
+                shouldRunPostHook = true;
               } else if (task.action === 'delete') {
                 await pg.pool.query(`delete from ${table} where id = $1`, [task.idOrKey]);
+                shouldRunPostHook = true;
               }
             } catch (e) {
               this.errorHandler({
@@ -407,11 +411,13 @@ export class FirebaseLiftPostgresSyncTool {
           })
         ]);
 
-        await this.postMirrorHook({
-          action: task.action === 'delete' ? 'delete' : 'create/update',
-          collectionOrRecordPath: task.collectionOrRecordPath,
-          item: task.afterItem
-        });
+        if (shouldRunPostHook) {
+          await this.postMirrorHook({
+            action: task.action === 'delete' ? 'delete' : 'create/update',
+            collectionOrRecordPath: task.collectionOrRecordPath,
+            item: task.afterItem
+          });
+        }
       } catch (e) {
         this.errorHandler({
           message: `Trouble running handleSyncTasks.`,

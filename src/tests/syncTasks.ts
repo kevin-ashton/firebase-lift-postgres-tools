@@ -16,6 +16,8 @@ import { SyncTask } from '../models';
 
 export function syncTasksTests() {
   describe('FirebaseLiftPostgresSyncTool Sync Tasks Basics', () => {
+    let m1 = { 'create/update': 0, delete: 0, total: 0 };
+
     test('Ensure mirror tables are created on startup', async () => {
       console.log('Attempt to drop table');
       try {
@@ -55,6 +57,7 @@ export function syncTasksTests() {
     }).syncTask;
     run(async () => {
       await reset();
+      m1 = getPostMirrorHasRunNTimes();
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([createTask]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
     });
@@ -64,6 +67,8 @@ export function syncTasksTests() {
       assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_transformed));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(stable(r2.rows[0].item), stable(item1_transformed));
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
     });
 
     let updatedItem = { ...item1, ...{ foo: 'foo ' + Math.random() } };
@@ -80,15 +85,13 @@ export function syncTasksTests() {
       })
     }).syncTask;
 
-    let m1 = 0;
     run(async () => {
-      await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
       m1 = getPostMirrorHasRunNTimes();
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([updateTask]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
     });
 
-    test('Update item into mirror/audit tables and basic check for posthook', async () => {
+    test('Update item into mirror/audit tables', async () => {
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem_transformed));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
@@ -100,7 +103,8 @@ export function syncTasksTests() {
       assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(item1_transformed));
       assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem_transformed));
 
-      assert.deepStrictEqual(m1 + 1, getPostMirrorHasRunNTimes());
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
     });
 
     let deleteTask = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
@@ -116,6 +120,7 @@ export function syncTasksTests() {
     }).syncTask;
 
     run(async () => {
+      m1 = getPostMirrorHasRunNTimes();
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([deleteTask]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
       await new Promise((r) => setTimeout(() => r(), 1000));
@@ -132,6 +137,8 @@ export function syncTasksTests() {
       );
       assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(updatedItem_transformed));
       assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable({}));
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1.delete + 1, getPostMirrorHasRunNTimes().delete);
     });
 
     test('Race condition (2 tasks, same item, same moment, correct order)', async () => {
@@ -142,6 +149,8 @@ export function syncTasksTests() {
       getFirebaseLiftPostgresSyncTool()._registerSyncTaskDebugFn(async () => {
         await new Promise((r) => setTimeout(() => r(), 1000));
       });
+
+      m1 = getPostMirrorHasRunNTimes();
 
       // Start the first one
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([createTask]);
@@ -167,6 +176,8 @@ export function syncTasksTests() {
       );
       assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(item1_transformed));
       assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem_transformed));
+      assert.deepStrictEqual(m1.total + 2, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 2, getPostMirrorHasRunNTimes()['create/update']);
     });
 
     const updateItem2 = { ...updatedItem, ...{ foo: 'foo ' + Math.random() } };
@@ -190,6 +201,7 @@ export function syncTasksTests() {
         await new Promise((r) => setTimeout(() => r(), 1000));
       });
 
+      m1 = getPostMirrorHasRunNTimes();
       // Queue update #2
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([updateTask2]);
       await new Promise((r) => setTimeout(() => r(), 200));
@@ -214,6 +226,8 @@ export function syncTasksTests() {
       );
       assert.deepStrictEqual(stable(r3.rows[0].beforeitem), stable(updatedItem_transformed));
       assert.deepStrictEqual(stable(r3.rows[0].afteritem), stable(updatedItem2_transformed));
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
     });
 
     test('Race condition (2 tasks, same item, not same moment, wrong order)', async () => {
@@ -226,6 +240,7 @@ export function syncTasksTests() {
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([createTask]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
 
+      m1 = getPostMirrorHasRunNTimes();
       // Queue update #2
       getFirebaseLiftPostgresSyncTool().queueSyncTasks([updateTask2]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncQueueDrained();
@@ -235,7 +250,7 @@ export function syncTasksTests() {
       await new Promise((r) => setTimeout(() => r(), 500));
 
       assert.deepStrictEqual(
-        originalTotalSyncTasksSkipped + 2, // skip by two since we have two mirror targets
+        originalTotalSyncTasksSkipped + getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs, // skip by two since we have two mirror targets
         getFirebaseLiftPostgresSyncTool().getStats().totalSyncTasksSkipped
       );
 
@@ -246,6 +261,8 @@ export function syncTasksTests() {
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(stable(r2.rows[0].item), stable(updatedItem2_transformed));
       // We don't need to check the audit since it should still record both. We don't care as much of they are slighly out of order.
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
     });
   });
 }

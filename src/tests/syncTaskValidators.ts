@@ -6,7 +6,8 @@ import {
   collectionOrRecordPathsMeta,
   generateMockFirebaseChangeObject,
   getPool1,
-  exampleTransformFn
+  exampleTransformFn,
+  getPostMirrorHasRunNTimes
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
@@ -25,6 +26,7 @@ const rtdbRecordPath = collectionOrRecordPathsMeta[1].collectionOrRecordPath;
 
 export function syncTaskValidatorsTests() {
   describe('FirebaseLiftPostgresSyncTool Sync Validator Tasks Basics', () => {
+    let m1 = { 'create/update': 0, delete: 0, total: 0 };
     const firestoreCollection = getFirebaseApp().firestore().collection(collection);
     const rtdb = getFirebaseApp().database().ref(rtdbRecordPath);
 
@@ -48,9 +50,11 @@ export function syncTaskValidatorsTests() {
       });
       tool.queueSyncTasks([syncTask]);
       await tool._waitUntilSyncQueueDrained();
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
       assert.deepStrictEqual(startingErrors, tool.getStats().totalErrors);
+      assert.deepStrictEqual(m1.total, getPostMirrorHasRunNTimes().total);
     });
 
     test('Basic delete Validator', async () => {
@@ -92,12 +96,13 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTasks([syncTask2]);
       await tool._waitUntilSyncQueueDrained();
 
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
       assert.deepStrictEqual(originalErrors, tool.getStats().totalErrors);
+      assert.deepStrictEqual(m1.total, getPostMirrorHasRunNTimes().total);
 
-      // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(r1.rows.length, 0);
     });
@@ -107,7 +112,6 @@ export function syncTaskValidatorsTests() {
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
       const startingErrors = tool.getStats().totalErrors;
-      await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -124,10 +128,13 @@ export function syncTaskValidatorsTests() {
       // Delete item which should cause an error
       await getPool1().query(`delete from mirror_${collection} where id = $1`, [item1.id]);
       // Let validator run
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncValidatorQueueDrained();
       // Confirm an error occured
       assert.deepStrictEqual(startingErrors + 1, getFirebaseLiftPostgresSyncTool().getStats().totalErrors);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(stable(r1.rows[0].item), stable(item1_transformed));
@@ -141,7 +148,7 @@ export function syncTaskValidatorsTests() {
         .totalSyncValidatorsTasksSkipped;
 
       await firestoreCollection.doc(item1.id).set(item1);
-      const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+      const { syncTask } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
@@ -193,6 +200,7 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTasks([syncTask3]);
       await tool._waitUntilSyncQueueDrained();
 
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator3]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
@@ -205,6 +213,7 @@ export function syncTaskValidatorsTests() {
         originalTotalSyncValidatorsTasksSkipped + tool.getStats().totalMirrorPgs,
         tool.getStats().totalSyncValidatorsTasksSkipped
       );
+      assert.deepStrictEqual(m1.total, getPostMirrorHasRunNTimes().total);
     });
 
     test('Create/Update syncTask failed to run', async () => {
@@ -245,10 +254,13 @@ export function syncTaskValidatorsTests() {
       // normally where the sync task would run
       await new Promise((r) => setTimeout(() => r(), 200));
 
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
       assert.deepStrictEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
@@ -265,7 +277,7 @@ export function syncTaskValidatorsTests() {
       const originalErrors = tool.getStats().totalErrors;
 
       await firestoreCollection.doc(item1.id).set(item1);
-      const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
+      const { syncTask } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
         firestoreTriggerWriteChangeObject: generateMockFirebaseChangeObject({
@@ -292,10 +304,16 @@ export function syncTaskValidatorsTests() {
         })
       });
 
+      // Normally where the syncTask for delete would run
+      await new Promise((r) => setTimeout(() => r(), 100));
+
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
       assert.deepStrictEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1.delete + 1, getPostMirrorHasRunNTimes().delete);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
@@ -326,10 +344,13 @@ export function syncTaskValidatorsTests() {
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
       await getPool1().query(`update mirror_${collection} set item = $1 where id = $2`, [item1Update1, item1.id]);
 
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
       assert.deepStrictEqual(originalErrors + 1, tool.getStats().totalErrors);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
 
       // Confirm it healed the issue
       let r1 = await getPool1().query('select * from mirror_person where id = $1', [item1.id]);
@@ -377,6 +398,8 @@ export function syncTaskValidatorsTests() {
       tool._registerSyncValidatorTaskDebugFn(async () => {
         await new Promise((r) => setTimeout(() => r(), 500));
       });
+
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await new Promise((r) => setTimeout(() => r(), 100));
       assert.deepStrictEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
@@ -395,6 +418,7 @@ export function syncTaskValidatorsTests() {
         originalStats.totalSyncValidatorTasksPendingRetry
       );
       assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors);
+      assert.deepStrictEqual(m1.total, getPostMirrorHasRunNTimes().total);
     });
 
     test('Race Condition: same item, incorrect order, multiple validators', async () => {
@@ -438,6 +462,7 @@ export function syncTaskValidatorsTests() {
       tool._registerSyncValidatorTaskDebugFn(async () => {
         await new Promise((r) => setTimeout(() => r(), 500));
       });
+      m1 = getPostMirrorHasRunNTimes();
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await new Promise((r) => setTimeout(() => r(), 100));
       assert.deepStrictEqual(tool.getStats().totalSyncValidatorTasksCurrentlyRunning, 1);
@@ -459,6 +484,7 @@ export function syncTaskValidatorsTests() {
         originalStats.totalSyncValidatorTasksPendingRetry
       );
       assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors);
+      assert.deepStrictEqual(m1.total, getPostMirrorHasRunNTimes().total);
     });
   });
 }

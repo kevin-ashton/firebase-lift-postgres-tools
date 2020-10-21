@@ -6,7 +6,8 @@ import {
   collectionOrRecordPathsMeta,
   generateMockFirebaseChangeObject,
   getPool1,
-  getPool2
+  getPool2,
+  getPostMirrorHasRunNTimes
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
@@ -78,8 +79,10 @@ async function resetLocal() {
 
 export function fullMirrorValidations() {
   describe('Full mirror validations', () => {
+    let m1 = { 'create/update': 0, delete: 0, total: 0 };
     test('Large dataset with no errors', async () => {
       await resetLocal();
+      m1 = getPostMirrorHasRunNTimes();
 
       const r = await getFirebaseLiftPostgresSyncTool().fullMirrorValidation({
         batchSize: 20,
@@ -105,10 +108,12 @@ export function fullMirrorValidations() {
         r.validationResults.ITEMS_WERE_IN_EXPECTED_STATE,
         (persons.length + devices.length) * getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs
       );
+      assert.deepStrictEqual(m1.total, getPostMirrorHasRunNTimes().total);
     });
 
     test('Missing item in firestore mirror', async () => {
       await resetLocal();
+      m1 = getPostMirrorHasRunNTimes();
 
       await getPool1().query('delete from mirror_person where id = $1', [persons[0].id]);
 
@@ -133,12 +138,15 @@ export function fullMirrorValidations() {
 
       // Make sure it self healed
       assert.deepStrictEqual(r2.rows.length, 1);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
     });
 
     test('Missing item in rtdb mirror', async () => {
       await resetLocal();
 
       await getPool1().query('delete from mirror_device where id = $1', [devices[0].id]);
+      m1 = getPostMirrorHasRunNTimes();
 
       const r = await getFirebaseLiftPostgresSyncTool().fullMirrorValidation({
         batchSize: 20,
@@ -159,12 +167,16 @@ export function fullMirrorValidations() {
       assert.deepStrictEqual(r.totalErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEM_WAS_MISSING_IN_MIRROR, 1);
 
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
+
       // Make sure it self healed
       assert.deepStrictEqual(r2.rows.length, 1);
     });
 
     test('Items dont match in firestore mirror', async () => {
       await resetLocal();
+      m1 = getPostMirrorHasRunNTimes();
 
       await getPool1().query('update mirror_person set item = $1 where id = $2', [{ bad: 'data' }, persons[0].id]);
 
@@ -186,6 +198,8 @@ export function fullMirrorValidations() {
 
       assert.deepStrictEqual(r.totalErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEMS_DID_NOT_MATCH, 1);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
 
       // Make sure it self healed
       assert.deepStrictEqual(r2.rows.length, 1);
@@ -193,6 +207,7 @@ export function fullMirrorValidations() {
 
     test('Items dont match in rtdb mirror', async () => {
       await resetLocal();
+      m1 = getPostMirrorHasRunNTimes();
 
       await getPool1().query('update mirror_device set item = $1 where id = $2', [{ bad: 'data' }, devices[0].id]);
 
@@ -214,6 +229,8 @@ export function fullMirrorValidations() {
 
       assert.deepStrictEqual(r.totalErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEMS_DID_NOT_MATCH, 1);
+      assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
+      assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
 
       // Make sure it self healed
       assert.deepStrictEqual(r2.rows.length, 1);
@@ -221,6 +238,7 @@ export function fullMirrorValidations() {
 
     test('Extra row in pg for firestore mirror', async () => {
       await resetLocal();
+      m1 = getPostMirrorHasRunNTimes();
 
       await getFirebaseApp().firestore().collection('person').doc(persons[0].id).delete();
 
@@ -235,15 +253,24 @@ export function fullMirrorValidations() {
         }
       });
 
-      console.log(JSON.stringify(r, null, 2));
-
       let r2 = await getPool1().query('select * from mirror_person where id = $1', [persons[0].id]);
       if (r.status === 'failed') {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, 2);
-      assert.deepStrictEqual(r.validationResults.ITEM_WAS_NOT_DELETED_IN_MIRROR, 2);
+      assert.deepStrictEqual(r.totalErrors, getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs);
+      assert.deepStrictEqual(
+        r.validationResults.ITEM_WAS_NOT_DELETED_IN_MIRROR,
+        getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs
+      );
+      assert.deepStrictEqual(
+        m1.total + getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs,
+        getPostMirrorHasRunNTimes().total
+      );
+      assert.deepStrictEqual(
+        m1.delete + getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs,
+        getPostMirrorHasRunNTimes().delete
+      );
 
       // // Make sure it self healed
       assert.deepStrictEqual(r2.rows.length, 0);
@@ -251,6 +278,7 @@ export function fullMirrorValidations() {
 
     test('Extra row in pg for rtdb mirror', async () => {
       await resetLocal();
+      m1 = getPostMirrorHasRunNTimes();
 
       await getFirebaseApp().database().ref(`device/${devices[0].id}`).remove();
 
@@ -270,8 +298,19 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, 2);
-      assert.deepStrictEqual(r.validationResults.ITEM_WAS_NOT_DELETED_IN_MIRROR, 2);
+      assert.deepStrictEqual(r.totalErrors, getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs);
+      assert.deepStrictEqual(
+        r.validationResults.ITEM_WAS_NOT_DELETED_IN_MIRROR,
+        getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs
+      );
+      assert.deepStrictEqual(
+        m1.total + getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs,
+        getPostMirrorHasRunNTimes().total
+      );
+      assert.deepStrictEqual(
+        m1.delete + getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs,
+        getPostMirrorHasRunNTimes().delete
+      );
 
       // // Make sure it self healed
       assert.deepStrictEqual(r2.rows.length, 0);
