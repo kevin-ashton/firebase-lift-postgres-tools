@@ -260,7 +260,7 @@ export function syncTasksTests() {
       assert.deepStrictEqual(stable(r1.rows[0].item), stable(updatedItem2_transformed));
       let r2 = await getPool2().query('select * from mirror_person where id = $1', [item1.id]);
       assert.deepStrictEqual(stable(r2.rows[0].item), stable(updatedItem2_transformed));
-      // We don't need to check the audit since it should still record both. We don't care as much of they are slighly out of order.
+      // We don't need to check the audit since it should still record both. We don't care as much of they are slightly out of order.
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
     });

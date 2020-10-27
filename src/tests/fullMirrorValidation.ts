@@ -11,7 +11,6 @@ import {
 } from './helpers';
 import { FirebaseLiftPostgresSyncTool } from '../FirebaseLiftPostgresSyncTool';
 import * as assert from 'assert';
-import * as stable from 'json-stable-stringify';
 
 interface Foo {
   id: string;

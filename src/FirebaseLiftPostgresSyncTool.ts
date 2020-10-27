@@ -17,7 +17,7 @@ interface FullMirrorValidationResultError {
 interface FullMirrorValidationRunResult {
   runId: number;
   startMS: number;
-  finshMS?: number;
+  finishMS?: number;
   status: 'finished' | 'running';
   initialRowCounts: {
     [pgTitle: string]: { [collectionsOrRecordPath: string]: number };
@@ -151,7 +151,7 @@ export class FirebaseLiftPostgresSyncTool {
         for (let k = 0; k < baseTableNames.length; k++) {
           const baseTableName = baseTableNames[k];
           try {
-            await pg.pool.query(`select count(*) from mirror_${baseTableName}`);
+            await pg.pool.query(`select * from mirror_${baseTableName} limit 1`);
           } catch (e) {
             try {
               console.log(`Creating mirror table. BaseTableName: ${baseTableName}. DB Title: ${pg.title}`);
@@ -189,7 +189,7 @@ export class FirebaseLiftPostgresSyncTool {
         for (let k = 0; k < baseTableNames.length; k++) {
           const baseTableName = baseTableNames[k];
           try {
-            await pg.pool.query(`select count(*) from audit_${baseTableName}`);
+            await pg.pool.query(`select * from audit_${baseTableName} limit 1`);
           } catch (e) {
             try {
               console.log(`Creating audit table. BaseTableName: ${baseTableName}. DB Title: ${pg.title}`);
@@ -279,10 +279,10 @@ export class FirebaseLiftPostgresSyncTool {
       if (isDone()) {
         resolve();
       } else {
-        const internval = setInterval(() => {
+        const interval = setInterval(() => {
           if (isDone()) {
             resolve();
-            clearInterval(internval);
+            clearInterval(interval);
           }
         }, 300);
       }
@@ -704,7 +704,7 @@ export class FirebaseLiftPostgresSyncTool {
     };
   }
 
-  private async collectionorRecordPathMirrorValidation(p: {
+  private async collectionOrRecordPathMirrorValidation(p: {
     collectionOrRecordPathMeta: CollectionOrRecordPathMeta;
     validationErrorLogger: ValidationErrorLogger;
     currentResult: FullMirrorValidationRunResult;
@@ -900,7 +900,7 @@ export class FirebaseLiftPostgresSyncTool {
           }
 
           const table = `mirror_${c}`;
-          const r1 = await pg.pool.query(`select count(*) as count from ${table}`);
+          const r1 = await pg.pool.query(`select count(id) as count from ${table}`);
           await pg.pool.query(`update ${table} set validation_number = $1`, [result.runId]);
           if (r1.rows.length !== 1) {
             throw new Error(
@@ -921,7 +921,7 @@ export class FirebaseLiftPostgresSyncTool {
           throw new Error(`Cannot run fullMirrorValidation for ${c} with meta.`);
         }
 
-        await this.collectionorRecordPathMirrorValidation({
+        await this.collectionOrRecordPathMirrorValidation({
           currentResult: result,
           batchSize: p.batchSize,
           collectionOrRecordPathMeta: meta,
@@ -935,9 +935,52 @@ export class FirebaseLiftPostgresSyncTool {
     }
 
     result.status = 'finished';
-    result.finshMS = Date.now();
+    result.finishMS = Date.now();
 
     return result;
+  }
+
+  public async trimOldAudits(p: {
+    collectionsOrRecordPaths: string[];
+    daysToRetain: number;
+    progress: (status: string) => void;
+  }): Promise<{ status: 'success' | 'error' }> {
+    let hadError = false;
+    for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
+      const c = p.collectionsOrRecordPaths[i];
+      const v = this.collectionOrRecordPathsMeta.find((e) => e.collectionOrRecordPath === c);
+      if (!v) {
+        throw new Error(`Unable to run fullMirrorValidation. ${c} is not a valid collectionOrRecordPath`);
+      }
+    }
+    p.progress('Collections and record paths appear valid. Will start audit trim for each.');
+
+    for (let i = 0; i < p.collectionsOrRecordPaths.length; i++) {
+      const c = p.collectionsOrRecordPaths[i];
+      const table = `audit_${c}`;
+      const query = `delete from ${table} where recorded_at < (NOW() - INTERVAL '${p.daysToRetain} days') `;
+      const start = Date.now();
+      for (let k = 0; k < this.auditPgs.length; k++) {
+        try {
+          p.progress(`Start audit trim for ${p.collectionsOrRecordPaths}. Pool Title: ${this.auditPgs[k].title}`);
+          await this.auditPgs[k].pool.query(query);
+        } catch (e) {
+          p.progress(
+            `Trouble running audit trim for ${p.collectionsOrRecordPaths}. Pool Title: ${this.auditPgs[k].title} Error: ${e.message}`
+          );
+          console.error(e);
+
+          hadError = true;
+        }
+        p.progress(
+          `Ran audit trim for ${p.collectionsOrRecordPaths}. Pool Title: ${
+            this.auditPgs[k].title
+          }. Total minutes to run: ${Date.now() - start / 1000 / 60}`
+        );
+      }
+    }
+
+    return { status: hadError ? 'error' : 'success' };
   }
 
   public static generateSyncTaskFromWriteTrigger(p: {
