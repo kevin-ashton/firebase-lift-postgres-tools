@@ -2,7 +2,7 @@
   "name": "firebase-lift-postgres-tools",
   "version": "0.0.1",
   "description": "Unlocking the power of SQL queries for firebase",
-  "main": "index.js",
+  "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "test": "node dist/tests/index.js",
