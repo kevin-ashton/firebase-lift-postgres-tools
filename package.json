@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node dist/tests/index.js",
     "ts-build": "tsc ",
-    "ts-watch": "tsc -w",
+    "ts-watch": "tsc -w --preserveWatchOutput",
     "start": "firebase emulators:start"
   },
   "repository": {
