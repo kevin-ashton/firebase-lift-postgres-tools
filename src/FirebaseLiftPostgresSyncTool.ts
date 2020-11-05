@@ -330,7 +330,7 @@ export class FirebaseLiftPostgresSyncTool {
               if (task.action === 'create') {
                 if (r1.rows.length > 0) {
                   this.errorHandler({
-                    message: `Trying to create an item but the item already exist.`,
+                    message: `Trying to create an item but the item already exist. We assume the item that already exists is newer.`,
                     meta: {
                       task,
                       pgTitle: pg.title
@@ -354,6 +354,15 @@ export class FirebaseLiftPostgresSyncTool {
                   collectionOrRecordPath: task.collectionOrRecordPath,
                   item: { ...item }
                 });
+                // If for some reason the item was never inserted previous just insert it as part of the update
+                if (r1.rows.length === 0) {
+                  await pg.pool.query(
+                    `insert into ${table} (id, item, updated_at, last_sync_task_date_ms) values ($1, $2, now(), $3)`,
+                    [task.idOrKey, item, task.dateMS]
+                  );
+                  shouldRunPostHook = true;
+                  return;
+                }
                 if (extractLastSyncTaskDateMs(r1.rows[0]) > task.dateMS) {
                   // Looks like another sync task has updated things more recently. Skip update.
                   this.totalSyncTasksSkipped += 1;
