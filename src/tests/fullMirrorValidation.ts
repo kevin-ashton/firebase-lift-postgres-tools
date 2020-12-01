@@ -97,7 +97,7 @@ export function fullMirrorValidations() {
       if (r.status === 'failed') {
         throw new Error('Failed to run correctly');
       }
-      assert.deepStrictEqual(r.totalErrors, 0);
+      assert.deepStrictEqual(r.totalValidationErrors, 0);
       assert.deepStrictEqual(r.totalDocsOrNodesProcessed, persons.length + devices.length);
       assert.deepStrictEqual(
         r.totalRowsProcessed,
@@ -132,7 +132,7 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, 1);
+      assert.deepStrictEqual(r.totalValidationErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEM_WAS_MISSING_IN_MIRROR, 1);
 
       // Make sure it self healed
@@ -163,7 +163,7 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, 1);
+      assert.deepStrictEqual(r.totalValidationErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEM_WAS_MISSING_IN_MIRROR, 1);
 
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
@@ -195,7 +195,7 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, 1);
+      assert.deepStrictEqual(r.totalValidationErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEMS_DID_NOT_MATCH, 1);
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
@@ -226,7 +226,7 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, 1);
+      assert.deepStrictEqual(r.totalValidationErrors, 1);
       assert.deepStrictEqual(r.validationResults.ITEMS_DID_NOT_MATCH, 1);
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
@@ -257,7 +257,7 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs);
+      assert.deepStrictEqual(r.totalValidationErrors, getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs);
       assert.deepStrictEqual(
         r.validationResults.ITEM_WAS_NOT_DELETED_IN_MIRROR,
         getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs
@@ -297,7 +297,7 @@ export function fullMirrorValidations() {
         throw new Error('Failed to run correctly');
       }
 
-      assert.deepStrictEqual(r.totalErrors, getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs);
+      assert.deepStrictEqual(r.totalValidationErrors, getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs);
       assert.deepStrictEqual(
         r.validationResults.ITEM_WAS_NOT_DELETED_IN_MIRROR,
         getFirebaseLiftPostgresSyncTool().getStats().totalMirrorPgs

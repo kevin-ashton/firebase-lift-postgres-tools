@@ -1,5 +1,5 @@
 {
-  "name": "@ollie-sports/firebase-lift-postgres-tools",
+  "name": "firebase-lift-postgres-tools",
   "version": "0.0.1",
   "description": "Unlocking the power of SQL queries for firebase",
   "main": "dist/index.js",

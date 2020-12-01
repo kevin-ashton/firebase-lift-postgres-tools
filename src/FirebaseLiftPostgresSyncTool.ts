@@ -25,7 +25,8 @@ interface FullMirrorValidationRunResult {
   totalInitialRowsFromMirrorTables: number;
   totalRowsProcessed: number;
   totalDocsOrNodesProcessed: number;
-  totalErrors: number;
+  totalProcessingErrors: number;
+  totalValidationErrors: number;
   validationResults: Record<ItemState, number>;
 }
 
@@ -54,6 +55,7 @@ interface ValidationResult {
 }
 
 type ValidationErrorLogger = (pp: ValidationResult) => void;
+type ProcessingErrorLogger = (pp: { error: any }) => void;
 
 type FullMirrorValidationResult = FullMirrorValidationResultError | FullMirrorValidationRunResult;
 
@@ -710,6 +712,7 @@ export class FirebaseLiftPostgresSyncTool {
   private async collectionOrRecordPathMirrorValidation(p: {
     collectionOrRecordPathMeta: CollectionOrRecordPathMeta;
     validationErrorLogger: ValidationErrorLogger;
+    processingErrorLogger: ProcessingErrorLogger;
     currentResult: FullMirrorValidationRunResult;
     batchSize: number;
   }) {
@@ -733,7 +736,7 @@ export class FirebaseLiftPostgresSyncTool {
             p.currentResult.validationResults[result.itemState] += 1;
             if (result.itemState !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
               unexpectedStateResults.push(result.itemState);
-              p.currentResult.totalErrors += 1;
+              p.currentResult.totalValidationErrors += 1;
               p.validationErrorLogger(result);
             }
           } else {
@@ -755,7 +758,7 @@ export class FirebaseLiftPostgresSyncTool {
 
               if (result.itemState !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
                 unexpectedStateResults.push(result.itemState);
-                p.currentResult.totalErrors += 1;
+                p.currentResult.totalValidationErrors += 1;
                 p.validationErrorLogger(result);
               }
             } else {
@@ -775,7 +778,8 @@ export class FirebaseLiftPostgresSyncTool {
           });
         }
       } catch (e) {
-        p.currentResult.totalErrors += 1;
+        p.currentResult.totalProcessingErrors += 1;
+        p.processingErrorLogger({ error: e });
       } finally {
         p.currentResult.totalDocsOrNodesProcessed += 1;
       }
@@ -821,7 +825,7 @@ export class FirebaseLiftPostgresSyncTool {
         });
         p.currentResult.validationResults[result.itemState] += 1;
         if (result.itemState !== 'ITEMS_WERE_IN_EXPECTED_STATE') {
-          p.currentResult.totalErrors += 1;
+          p.currentResult.totalValidationErrors += 1;
           p.validationErrorLogger(result);
           await this.postMirrorHook({
             action: 'delete',
@@ -844,15 +848,17 @@ export class FirebaseLiftPostgresSyncTool {
       currentResult: FullMirrorValidationRunResult;
     }) => void;
     validationErrorLogger: ValidationErrorLogger;
+    processingErrorLogger: ProcessingErrorLogger;
   }): Promise<FullMirrorValidationResult> {
     let result: FullMirrorValidationRunResult = {
       initialRowCounts: {},
-      status: 'finished',
+      status: 'running',
       runId: Date.now(),
       startMS: Date.now(),
       totalInitialRowsFromMirrorTables: 0,
       totalDocsOrNodesProcessed: 0,
-      totalErrors: 0,
+      totalProcessingErrors: 0,
+      totalValidationErrors: 0,
       validationResults: {
         ITEMS_DID_NOT_MATCH: 0,
         ITEMS_WERE_IN_EXPECTED_STATE: 0,
@@ -907,7 +913,8 @@ export class FirebaseLiftPostgresSyncTool {
           currentResult: result,
           batchSize: p.batchSize,
           collectionOrRecordPathMeta: meta,
-          validationErrorLogger: p.validationErrorLogger
+          validationErrorLogger: p.validationErrorLogger,
+          processingErrorLogger: p.processingErrorLogger
         });
       }
     } catch (e) {
