@@ -90,7 +90,10 @@ export function fullMirrorValidations() {
           console.log(p);
         },
         validationErrorLogger: (e) => {
-          console.log('error');
+          console.log('validation error');
+        },
+        processingErrorLogger: (e) => {
+          console.log('processing error');
         }
       });
 
@@ -123,7 +126,10 @@ export function fullMirrorValidations() {
           console.log(p);
         },
         validationErrorLogger: (e) => {
-          console.log('error');
+          console.log('validation error');
+        },
+        processingErrorLogger: (e) => {
+          console.log('processing error');
         }
       });
 
@@ -154,7 +160,10 @@ export function fullMirrorValidations() {
           console.log(p);
         },
         validationErrorLogger: (e) => {
-          console.log('error');
+          console.log('validation error');
+        },
+        processingErrorLogger: (e) => {
+          console.log('processing error');
         }
       });
 
@@ -183,6 +192,9 @@ export function fullMirrorValidations() {
         batchSize: 20,
         collectionsOrRecordPaths: ['person'],
         progressLogger: (p) => {
+          console.log(p);
+        },
+        processingErrorLogger: (p) => {
           console.log(p);
         },
         validationErrorLogger: (e) => {
@@ -217,7 +229,10 @@ export function fullMirrorValidations() {
           console.log(p);
         },
         validationErrorLogger: (e) => {
-          console.log('error');
+          console.log('validation error');
+        },
+        processingErrorLogger: (e) => {
+          console.log('processing error');
         }
       });
 
@@ -248,7 +263,10 @@ export function fullMirrorValidations() {
           console.log(p);
         },
         validationErrorLogger: (e) => {
-          console.log('error');
+          console.log('validation error');
+        },
+        processingErrorLogger: (e) => {
+          console.log('processing error');
         }
       });
 
@@ -288,7 +306,10 @@ export function fullMirrorValidations() {
           console.log(p);
         },
         validationErrorLogger: (e) => {
-          console.log('error');
+          console.log('validation error');
+        },
+        processingErrorLogger: (e) => {
+          console.log('processing error');
         }
       });
 
