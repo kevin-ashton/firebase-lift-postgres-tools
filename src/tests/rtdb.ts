@@ -83,12 +83,18 @@ export async function rtdbBasicTests() {
       const item1Update1 = { ...item1, ...{ update1: `foo - ${Math.random()}` } };
       await getPool1().query(`update mirror_${rtdbRecordPath} set item = $1 where id = $2`, [item1Update1, item1.id]);
 
-      assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors);
+      assert.deepStrictEqual(
+        tool.getStats().totalSyncValidationTasksInUnpexectedState,
+        originalStats.totalSyncValidationTasksInUnpexectedState
+      );
 
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepStrictEqual(tool.getStats().totalErrors, originalStats.totalErrors + 1);
+      assert.deepStrictEqual(
+        tool.getStats().totalSyncValidationTasksInUnpexectedState,
+        originalStats.totalSyncValidationTasksInUnpexectedState + 1
+      );
 
       // Make sure it has healed
       let r1 = await getPool1().query('select * from mirror_device where id = $1', [item1.id]);

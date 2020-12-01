@@ -33,7 +33,11 @@ export function syncTaskValidatorsTests() {
     test('Basic Create/Update Validator', async () => {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
-      await firestoreCollection.doc(item1.id).set(item1);
+      try {
+        await firestoreCollection.doc(item1.id).set(item1);
+      } catch (e) {
+        console.log(e);
+      }
 
       const startingErrors = getFirebaseLiftPostgresSyncTool().getStats().totalErrors;
       await firestoreCollection.doc(item1.id).set(item1);
@@ -111,7 +115,7 @@ export function syncTaskValidatorsTests() {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
-      const startingErrors = tool.getStats().totalErrors;
+      const totalSyncValidationTasksInUnpexectedState = tool.getStats().totalSyncValidationTasksInUnpexectedState;
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
         type: 'firestore',
         collectionOrRecordPath: 'person',
@@ -132,7 +136,10 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await getFirebaseLiftPostgresSyncTool()._waitUntilSyncValidatorQueueDrained();
       // Confirm an error occured
-      assert.deepStrictEqual(startingErrors + 1, getFirebaseLiftPostgresSyncTool().getStats().totalErrors);
+      assert.deepStrictEqual(
+        totalSyncValidationTasksInUnpexectedState + 1,
+        getFirebaseLiftPostgresSyncTool().getStats().totalSyncValidationTasksInUnpexectedState
+      );
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
       // Confirm it healed the issue
@@ -220,7 +227,7 @@ export function syncTaskValidatorsTests() {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
-      const originalErrors = tool.getStats().totalErrors;
+      const totalSyncValidationTasksInUnpexectedState = tool.getStats().totalSyncValidationTasksInUnpexectedState;
 
       await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
@@ -258,7 +265,10 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepStrictEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+      assert.deepStrictEqual(
+        totalSyncValidationTasksInUnpexectedState + tool.getStats().totalMirrorPgs,
+        tool.getStats().totalSyncValidationTasksInUnpexectedState
+      );
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
 
@@ -274,7 +284,7 @@ export function syncTaskValidatorsTests() {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
-      const originalErrors = tool.getStats().totalErrors;
+      const totalSyncValidationTasksInUnpexectedState = tool.getStats().totalSyncValidationTasksInUnpexectedState;
 
       await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
@@ -311,7 +321,10 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator2]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepStrictEqual(originalErrors + tool.getStats().totalMirrorPgs, tool.getStats().totalErrors);
+      assert.deepStrictEqual(
+        totalSyncValidationTasksInUnpexectedState + tool.getStats().totalMirrorPgs,
+        tool.getStats().totalSyncValidationTasksInUnpexectedState
+      );
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1.delete + 1, getPostMirrorHasRunNTimes().delete);
 
@@ -324,7 +337,7 @@ export function syncTaskValidatorsTests() {
       const tool = getFirebaseLiftPostgresSyncTool();
       await reset();
       await firestoreCollection.doc(item1.id).set(item1);
-      const originalErrors = tool.getStats().totalErrors;
+      const totalSyncValidationTasksInUnpexectedState = tool.getStats().totalSyncValidationTasksInUnpexectedState;
 
       await firestoreCollection.doc(item1.id).set(item1);
       const { syncTask, syncTaskValidator } = FirebaseLiftPostgresSyncTool.generateSyncTaskFromWriteTrigger({
@@ -348,7 +361,10 @@ export function syncTaskValidatorsTests() {
       tool.queueSyncTaskValidator([syncTaskValidator]);
       await tool._waitUntilSyncValidatorQueueDrained();
 
-      assert.deepStrictEqual(originalErrors + 1, tool.getStats().totalErrors);
+      assert.deepStrictEqual(
+        totalSyncValidationTasksInUnpexectedState + 1,
+        tool.getStats().totalSyncValidationTasksInUnpexectedState
+      );
       assert.deepStrictEqual(m1.total + 1, getPostMirrorHasRunNTimes().total);
       assert.deepStrictEqual(m1['create/update'] + 1, getPostMirrorHasRunNTimes()['create/update']);
 

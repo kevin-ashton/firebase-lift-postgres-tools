@@ -9,7 +9,7 @@ import { fullMirrorValidations } from './fullMirrorValidation';
 setOptions({ runPattern: 'serial', suppressConsole: true });
 
 async function main() {
-  await init();
+  init();
   syncTasksTests();
   syncTaskValidatorsTests();
   fullMirrorValidations();
