@@ -18,6 +18,7 @@ interface FullMirrorValidationRunResult {
   runId: number;
   startMS: number;
   finishMS?: number;
+  totalRunTimeSeconds?: number;
   status: 'finished' | 'running';
   initialRowCounts: {
     [pgTitle: string]: { [collectionsOrRecordPath: string]: number };
@@ -850,6 +851,7 @@ export class FirebaseLiftPostgresSyncTool {
     validationErrorLogger: ValidationErrorLogger;
     processingErrorLogger: ProcessingErrorLogger;
   }): Promise<FullMirrorValidationResult> {
+    let startMS = Date.now();
     let result: FullMirrorValidationRunResult = {
       initialRowCounts: {},
       status: 'running',
@@ -925,6 +927,7 @@ export class FirebaseLiftPostgresSyncTool {
 
     result.status = 'finished';
     result.finishMS = Date.now();
+    result.totalRunTimeSeconds = Math.round((startMS - Date.now()) / 1000);
 
     return result;
   }
