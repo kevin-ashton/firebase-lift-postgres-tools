@@ -36,7 +36,13 @@ export async function fetchAndProcessFirestoreCollection(p: {
 
     r.forEach((doc) => {
       let item = doc.data();
-      processQueue.push(item);
+      if (doc.id !== item.id) {
+        console.warn(
+          `Firestore doc id does not match the id property on the actual document. Skipping doc. DocId: ${doc.id}. Id Property Value: ${item.id} `
+        );
+      } else {
+        processQueue.push(item);
+      }
     });
 
     if (processQueue.length() > 0) {
@@ -90,7 +96,16 @@ export async function fetchAndProcessRtdbRecordPath(p: {
         return;
       }
       lastDocKey = doc.key;
-      docs.push(doc.val());
+
+      let data = doc.val();
+
+      if (data.id !== lastDocKey) {
+        console.warn(
+          `RTDB doc id does not match the id property on the actual document. Skipping doc. LastKeyId: ${lastDocKey}. Id Property Value: ${data.id} `
+        );
+      } else {
+        docs.push(data);
+      }
     });
 
     docs.forEach((doc) => {
